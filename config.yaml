@@ -1,0 +1,24 @@
+# Video file path (required)
+video_path: inputs/horse.mp4
+
+# Output settings
+output_path: null  # Auto-generate if null
+display: false
+
+# Model selection
+human_detector: rtdetr
+horse_detector: both
+human_pose_estimator: vitpose
+horse_pose_estimator: dual
+
+# Separate confidence thresholds for each model
+confidence_human_detection: 0.5
+confidence_horse_detection: 0.5
+confidence_human_pose: 0.5
+confidence_horse_pose_superanimal: 0.3
+confidence_horse_pose_vitpose: 0.4
+
+# Other settings
+jockey_overlap_threshold: 0.4
+max_frames: null
+device: cuda

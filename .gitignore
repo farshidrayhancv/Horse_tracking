@@ -1,0 +1,10 @@
+/__pycache__
+/ouput_2.mp4
+/run.py
+/setup.py
+inputs/*
+outputs/*
+__pycache__
+*.pt
+*.pyc
+*.lock

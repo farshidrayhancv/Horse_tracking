@@ -1,0 +1,35 @@
+name: horse_tracking
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.10
+  - pip
+  - ffmpeg
+  - numpy=1.26.4
+  - mkl=2024.0
+  
+  - pip:
+    # PyTorch with CUDA support
+    - torch==2.7.1+cu126
+    - torchvision==0.22.1+cu126
+    
+    # HuggingFace Transformers ecosystem  
+    - transformers==4.52.4
+    - huggingface-hub
+    - tokenizers
+    - safetensors
+    
+    # Computer Vision
+    - opencv-python==4.11.0
+    - Pillow==11.2.1
+    
+    # SuperAnimal support
+    - dlclibrary==0.0.7
+    
+    # Core dependencies used in code
+    - requests
+    - tqdm
