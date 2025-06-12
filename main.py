@@ -141,7 +141,7 @@ class HybridPoseSystem:
             class_id=detections.class_id[top_indices]
         )
         
-        print(f"🎯 Limited {detection_type}: {len(detections)} → {len(limited_detections)} (expected: {max_count})")
+        # print(f"🎯 Limited {detection_type}: {len(detections)} → {len(limited_detections)} (expected: {max_count})")
         return limited_detections
     
     def associate_poses_with_tracks(self, poses, tracked_detections):

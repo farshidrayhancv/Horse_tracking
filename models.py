@@ -418,8 +418,8 @@ class SuperAnimalQuadruped:
     
     def estimate_pose(self, frame: np.ndarray, detections):
         """
-        CRITICAL: SuperAnimal pose estimation with SOURCE-LEVEL confidence filtering.
-        Only processes detected bounding boxes, and filters keypoints at the source.
+        🔥 ENHANCED: SuperAnimal pose estimation with focus on main subject per box.
+        Each detection box gets exactly one pose estimation focused on the primary subject.
         """
         if not self.pose_model:
             return []
@@ -452,8 +452,24 @@ class SuperAnimalQuadruped:
                 x2 = max(x1 + 1, min(x2, frame_w))
                 y2 = max(y1 + 1, min(y2, frame_h))
                 
-                # Crop to bounding box ONLY
-                cropped = frame[y1:y2, x1:x2]
+                # 🔥 ENHANCED: Focus on center region for main subject
+                # Add small padding to focus on the main subject in the center
+                box_w, box_h = x2 - x1, y2 - y1
+                center_padding_x = int(box_w * 0.05)  # 5% padding
+                center_padding_y = int(box_h * 0.05)
+                
+                focused_x1 = max(x1, x1 + center_padding_x)
+                focused_y1 = max(y1, y1 + center_padding_y)
+                focused_x2 = min(x2, x2 - center_padding_x)
+                focused_y2 = min(y2, y2 - center_padding_y)
+                
+                # Use focused crop if it's large enough, otherwise use original
+                if focused_x2 - focused_x1 > 50 and focused_y2 - focused_y1 > 50:
+                    cropped = frame[focused_y1:focused_y2, focused_x1:focused_x2]
+                    crop_offset_x, crop_offset_y = focused_x1, focused_y1
+                else:
+                    cropped = frame[y1:y2, x1:x2]
+                    crop_offset_x, crop_offset_y = x1, y1
                 
                 if cropped.size == 0:
                     continue
@@ -468,8 +484,8 @@ class SuperAnimalQuadruped:
                 with torch.no_grad():
                     heatmaps = self.pose_model(crop_tensor)
                 
-                # Convert heatmaps to keypoints (already includes sigmoid normalization)
-                keypoints = self.heatmaps_to_keypoints(heatmaps, box)
+                # Convert heatmaps to keypoints (with proper offset correction)
+                keypoints = self.heatmaps_to_keypoints_focused(heatmaps, crop_offset_x, crop_offset_y, crop_w, crop_h)
                 
                 if keypoints is not None:
                     # 🔥 CRITICAL: Apply SOURCE-LEVEL confidence filtering
@@ -489,14 +505,16 @@ class SuperAnimalQuadruped:
                     # Calculate average confidence only from valid keypoints
                     avg_confidence = total_confidence / valid_count if valid_count > 0 else 0.0
                     
-                    # print(f"🔥 SuperAnimal SOURCE filtering: {valid_count}/{len(keypoints)} keypoints above {conf_threshold}, avg_conf: {avg_confidence:.3f}")
-                    
-                    poses.append({
-                        'keypoints': np.array(filtered_keypoints),
-                        'box': box,
-                        'method': 'SuperAnimal',
-                        'confidence': avg_confidence
-                    })
+                    # Only accept poses with sufficient valid keypoints
+                    if valid_count >= 5:  # At least 5 valid keypoints for a meaningful pose
+                        poses.append({
+                            'keypoints': np.array(filtered_keypoints),
+                            'box': box,
+                            'method': 'SuperAnimal',
+                            'confidence': avg_confidence,
+                            'box_index': box_idx
+                        })
+                        # print(f"🔥 SuperAnimal Box {box_idx}: {valid_count}/39 keypoints above {conf_threshold}, avg_conf: {avg_confidence:.3f}")
             
             return poses
             
@@ -515,8 +533,8 @@ class SuperAnimalQuadruped:
         tensor = transform(crop_rgb).unsqueeze(0)
         return tensor.to(self.device)
     
-    def heatmaps_to_keypoints(self, heatmaps, box):
-        """Convert heatmaps to keypoints with sigmoid normalization"""
+    def heatmaps_to_keypoints_focused(self, heatmaps, offset_x, offset_y, crop_w, crop_h):
+        """Convert heatmaps to keypoints with proper coordinate mapping and sigmoid normalization"""
         try:
             if isinstance(heatmaps, tuple):
                 heatmaps = heatmaps[0]
@@ -538,13 +556,14 @@ class SuperAnimalQuadruped:
                 return None
             
             keypoints = []
-            x1, y1, x2, y2 = box
             
             for i in range(min(39, heatmaps.shape[0])):
                 heatmap = heatmaps[i]
                 y_idx, x_idx = np.unravel_index(np.argmax(heatmap), heatmap.shape)
-                x_coord = x1 + (x_idx / heatmap.shape[1]) * (x2 - x1)
-                y_coord = y1 + (y_idx / heatmap.shape[0]) * (y2 - y1)
+                
+                # Map from heatmap coordinates to crop coordinates, then to original image coordinates
+                x_coord = offset_x + (x_idx / heatmap.shape[1]) * crop_w
+                y_coord = offset_y + (y_idx / heatmap.shape[0]) * crop_h
                 
                 # ← Fixed: Normalize confidence to 0-1 range using sigmoid
                 raw_confidence = float(heatmap[y_idx, x_idx])
@@ -556,3 +575,8 @@ class SuperAnimalQuadruped:
         except Exception as e:
             print(f"Error converting heatmaps: {e}")
             return None
+    
+    def heatmaps_to_keypoints(self, heatmaps, box):
+        """Legacy method - use heatmaps_to_keypoints_focused for new code"""
+        x1, y1, x2, y2 = box
+        return self.heatmaps_to_keypoints_focused(heatmaps, x1, y1, x2-x1, y2-y1)
