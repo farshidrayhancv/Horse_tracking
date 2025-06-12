@@ -70,10 +70,10 @@ class HybridPoseSystem:
         print(f"🐴🏇 Configurable Pose System ready: {self.total_frames} frames")
     
     def setup_models(self):
-        # Setup SuperAnimal model if needed
+        # Setup SuperAnimal model if needed - 🔥 PASS CONFIG
         self.superanimal = None
         if self.config.horse_detector in ['superanimal', 'both'] or self.config.horse_pose_estimator in ['superanimal', 'dual']:
-            self.superanimal = SuperAnimalQuadruped(device=self.config.device)
+            self.superanimal = SuperAnimalQuadruped(device=self.config.device, config=self.config)  # 🔥 Pass config
         
         # Setup detection manager
         self.detection_manager = DetectionManager(self.config, self.superanimal)
@@ -144,7 +144,7 @@ class HybridPoseSystem:
             stats['humans_detected'] += len(jockey_detections) if sv else len(jockey_detections)
             stats['horses_detected'] += len(horse_detections) if sv else len(horse_detections)
             
-            # Estimate poses based on config
+            # 🔥 Estimate poses based on config - SOURCE-LEVEL FILTERING HAPPENS HERE
             human_poses = self.pose_manager.estimate_human_poses(frame, jockey_detections)
             horse_poses = self.pose_manager.estimate_horse_poses(frame, horse_detections)
             
@@ -158,7 +158,7 @@ class HybridPoseSystem:
                 stats['superanimal_wins'] += superanimal_count
                 stats['vitpose_wins'] += vitpose_count
             
-            # Visualize everything
+            # 🔥 Visualize everything - NO FILTERING NEEDED (already done at source)
             frame = self.visualizer.annotate_detections(frame, jockey_detections, horse_detections)
             
             # Draw poses

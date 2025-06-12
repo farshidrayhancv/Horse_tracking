@@ -28,46 +28,44 @@ class Visualizer:
         ]
     
     def draw_human_pose(self, frame: np.ndarray, pose_result: Dict, min_confidence: float = None):
+        """
+        🔥 SIMPLIFIED: Just draws keypoints - confidence filtering already done at source
+        """
         if 'keypoints' not in pose_result or 'scores' not in pose_result:
             return frame
-        
-        # Use provided confidence or config value
-        conf_threshold = min_confidence if min_confidence is not None else self.config.confidence_human_pose
         
         keypoints = pose_result['keypoints'].cpu().numpy() if hasattr(pose_result['keypoints'], 'cpu') else pose_result['keypoints']
         scores = pose_result['scores'].cpu().numpy() if hasattr(pose_result['scores'], 'cpu') else pose_result['scores']
         
-        # Draw skeleton
+        # Draw skeleton - only valid keypoints (confidence > 0)
         for start_idx, end_idx in self.human_skeleton:
-            if start_idx < len(keypoints) and end_idx < len(keypoints):
-                if scores[start_idx] > conf_threshold and scores[end_idx] > conf_threshold:
-                    start_point = (int(keypoints[start_idx][0]), int(keypoints[start_idx][1]))
-                    end_point = (int(keypoints[end_idx][0]), int(keypoints[end_idx][1]))
-                    cv2.line(frame, start_point, end_point, self.human_color, 2)
+            if (start_idx < len(keypoints) and end_idx < len(keypoints) and
+                scores[start_idx] > 0 and scores[end_idx] > 0):
+                start_point = (int(keypoints[start_idx][0]), int(keypoints[start_idx][1]))
+                end_point = (int(keypoints[end_idx][0]), int(keypoints[end_idx][1]))
+                cv2.line(frame, start_point, end_point, self.human_color, 2)
         
-        # Draw keypoints
+        # Draw keypoints - only valid ones (confidence > 0)
+        valid_count = 0
         for i, (kpt, score) in enumerate(zip(keypoints, scores)):
-            if score > conf_threshold:
+            if score > 0:  # Valid keypoint (already filtered at source)
                 center = (int(kpt[0]), int(kpt[1]))
                 cv2.circle(frame, center, 4, self.keypoint_color, -1)
                 cv2.circle(frame, center, 5, self.human_color, 1)
+                valid_count += 1
         
+        # print(f"✅ Human pose: Drew {valid_count}/{len(keypoints)} valid keypoints")
         return frame
     
     def draw_horse_pose(self, frame: np.ndarray, pose_result: Dict, min_confidence: float = None):
+        """
+        🔥 SIMPLIFIED: Just draws keypoints - confidence filtering already done at source
+        """
         if 'keypoints' not in pose_result or 'method' not in pose_result:
             return frame
         
         keypoints = pose_result['keypoints']
         method = pose_result['method']
-        
-        # Use appropriate confidence threshold based on method
-        if min_confidence is not None:
-            conf_threshold = min_confidence
-        elif method == 'SuperAnimal':
-            conf_threshold = self.config.confidence_horse_pose_superanimal
-        else:  # ViTPose
-            conf_threshold = self.config.confidence_horse_pose_vitpose
         
         # Choose color and skeleton based on method
         if method == 'SuperAnimal':
@@ -77,21 +75,28 @@ class Visualizer:
             color = self.vitpose_horse_color
             skeleton = self.human_skeleton  # Use human skeleton for ViTPose horses
         
-        # Draw skeleton
+        # Draw skeleton - only valid keypoints (coordinates != -1, confidence > 0)
         for start_idx, end_idx in skeleton:
-            if start_idx < len(keypoints) and end_idx < len(keypoints):
-                if keypoints[start_idx][2] > conf_threshold and keypoints[end_idx][2] > conf_threshold:
+            if (start_idx < len(keypoints) and end_idx < len(keypoints)):
+                start_valid = keypoints[start_idx][0] != -1 and keypoints[start_idx][2] > 0
+                end_valid = keypoints[end_idx][0] != -1 and keypoints[end_idx][2] > 0
+                
+                if start_valid and end_valid:
                     start_point = (int(keypoints[start_idx][0]), int(keypoints[start_idx][1]))
                     end_point = (int(keypoints[end_idx][0]), int(keypoints[end_idx][1]))
                     cv2.line(frame, start_point, end_point, color, 2)
         
-        # Draw keypoints
+        # Draw keypoints - only valid ones (coordinates != -1, confidence > 0)
+        valid_count = 0
         for i, kpt in enumerate(keypoints):
-            if kpt[2] > conf_threshold:
-                center = (int(kpt[0]), int(kpt[1]))
+            x, y, conf = kpt
+            if x != -1 and y != -1 and conf > 0:  # Valid keypoint (already filtered at source)
+                center = (int(x), int(y))
                 cv2.circle(frame, center, 4, self.keypoint_color, -1)
                 cv2.circle(frame, center, 5, color, 1)
+                valid_count += 1
         
+        # print(f"✅ {method} pose: Drew {valid_count}/{len(keypoints)} valid keypoints")
         return frame
     
     def annotate_detections(self, frame: np.ndarray, human_detections, horse_detections):
@@ -157,7 +162,8 @@ class Visualizer:
             f"Config: H-Det:{self.config.human_detector} H-Pose:{self.config.human_pose_estimator}",
             f"        Horse-Det:{self.config.horse_detector} Horse-Pose:{self.config.horse_pose_estimator}",
             f"Detected - Jockeys:{human_count} Horses:{horse_count}",
-            f"Poses - Humans:{human_poses} Horses:{horse_poses}"
+            f"Poses - Humans:{human_poses} Horses:{horse_poses}",
+            f"SOURCE Filtering: Human:{self.config.confidence_human_pose} Horse-ViTPose:{self.config.confidence_horse_pose_vitpose}"
         ]
         
         if self.config.horse_pose_estimator == 'dual' and stats:

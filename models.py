@@ -249,8 +249,9 @@ class HRNet(nn.Module):
         return x
 
 class SuperAnimalQuadruped:
-    def __init__(self, device: str = "cpu"):
+    def __init__(self, device: str = "cpu", config=None):
         self.device = device
+        self.config = config  # 🔥 Store config reference for confidence thresholds
         self.detector_model = None
         self.pose_model = None
         self.setup_models()
@@ -381,18 +382,21 @@ class SuperAnimalQuadruped:
                 predictions = self.detector_model(frame_tensor)
             
             boxes = []
+            actual_scores = []
             if len(predictions) > 0:
                 pred = predictions[0]
                 if 'scores' in pred and 'boxes' in pred:
                     valid_indices = pred['scores'] > conf_threshold
                     if valid_indices.any():
                         valid_boxes = pred['boxes'][valid_indices]
+                        valid_scores = pred['scores'][valid_indices]
                         boxes = valid_boxes.cpu().numpy()
+                        actual_scores = valid_scores.cpu().numpy()
             
             if sv and len(boxes) > 0:
                 return sv.Detections(
                     xyxy=boxes,
-                    confidence=np.ones(len(boxes)) * 0.8,
+                    confidence=actual_scores,  # ← Fixed: Use real scores instead of hardcoded 0.8
                     class_id=np.ones(len(boxes), dtype=int) * 17
                 )
             elif sv:
@@ -413,9 +417,14 @@ class SuperAnimalQuadruped:
         return tensor.to(self.device)
     
     def estimate_pose(self, frame: np.ndarray, detections):
+        """
+        CRITICAL: SuperAnimal pose estimation with SOURCE-LEVEL confidence filtering.
+        Only processes detected bounding boxes, and filters keypoints at the source.
+        """
         if not self.pose_model:
             return []
         
+        # Extract bounding boxes from detections
         if sv and hasattr(detections, 'xyxy'):
             boxes = detections.xyxy
         else:
@@ -425,26 +434,72 @@ class SuperAnimalQuadruped:
             return []
         
         poses = []
+        # 🔥 Get confidence threshold from config
+        conf_threshold = self.config.confidence_horse_pose_superanimal if self.config else 0.3
+        
         try:
-            for box in boxes:
+            for box_idx, box in enumerate(boxes):
                 x1, y1, x2, y2 = box.astype(int)
+                
+                # Safety checks for valid bounding box
+                if x1 >= x2 or y1 >= y2:
+                    continue
+                
+                # Ensure box is within frame bounds
+                frame_h, frame_w = frame.shape[:2]
+                x1 = max(0, min(x1, frame_w - 1))
+                y1 = max(0, min(y1, frame_h - 1))
+                x2 = max(x1 + 1, min(x2, frame_w))
+                y2 = max(y1 + 1, min(y2, frame_h))
+                
+                # Crop to bounding box ONLY
                 cropped = frame[y1:y2, x1:x2]
+                
                 if cropped.size == 0:
                     continue
                 
+                crop_h, crop_w = cropped.shape[:2]
+                if crop_h < 10 or crop_w < 10:
+                    continue
+                
+                # Preprocess the CROPPED image
                 crop_tensor = self.preprocess_crop_pose(cropped)
+                
                 with torch.no_grad():
                     heatmaps = self.pose_model(crop_tensor)
                 
+                # Convert heatmaps to keypoints (already includes sigmoid normalization)
                 keypoints = self.heatmaps_to_keypoints(heatmaps, box)
+                
                 if keypoints is not None:
+                    # 🔥 CRITICAL: Apply SOURCE-LEVEL confidence filtering
+                    filtered_keypoints = []
+                    valid_count = 0
+                    total_confidence = 0.0
+                    
+                    for i, kpt in enumerate(keypoints):
+                        x_coord, y_coord, confidence = kpt
+                        if confidence > conf_threshold:
+                            filtered_keypoints.append([x_coord, y_coord, confidence])
+                            valid_count += 1
+                            total_confidence += confidence
+                        else:
+                            filtered_keypoints.append([-1.0, -1.0, 0.0])  # Invalid keypoint marker
+                    
+                    # Calculate average confidence only from valid keypoints
+                    avg_confidence = total_confidence / valid_count if valid_count > 0 else 0.0
+                    
+                    # print(f"🔥 SuperAnimal SOURCE filtering: {valid_count}/{len(keypoints)} keypoints above {conf_threshold}, avg_conf: {avg_confidence:.3f}")
+                    
                     poses.append({
-                        'keypoints': keypoints,
+                        'keypoints': np.array(filtered_keypoints),
                         'box': box,
                         'method': 'SuperAnimal',
-                        'confidence': np.mean(keypoints[:, 2])
+                        'confidence': avg_confidence
                     })
+            
             return poses
+            
         except Exception as e:
             print(f"Error in SuperAnimal pose estimation: {e}")
             return []
@@ -461,6 +516,7 @@ class SuperAnimalQuadruped:
         return tensor.to(self.device)
     
     def heatmaps_to_keypoints(self, heatmaps, box):
+        """Convert heatmaps to keypoints with sigmoid normalization"""
         try:
             if isinstance(heatmaps, tuple):
                 heatmaps = heatmaps[0]
@@ -489,7 +545,11 @@ class SuperAnimalQuadruped:
                 y_idx, x_idx = np.unravel_index(np.argmax(heatmap), heatmap.shape)
                 x_coord = x1 + (x_idx / heatmap.shape[1]) * (x2 - x1)
                 y_coord = y1 + (y_idx / heatmap.shape[0]) * (y2 - y1)
-                confidence = heatmap[y_idx, x_idx]
+                
+                # ← Fixed: Normalize confidence to 0-1 range using sigmoid
+                raw_confidence = float(heatmap[y_idx, x_idx])
+                confidence = 1.0 / (1.0 + np.exp(-raw_confidence))
+                
                 keypoints.append([x_coord, y_coord, confidence])
             
             return np.array(keypoints)

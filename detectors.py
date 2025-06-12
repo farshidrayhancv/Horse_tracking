@@ -10,14 +10,19 @@ except ImportError:
 
 try:
     from transformers import AutoProcessor, RTDetrForObjectDetection
-    VITPOSE_AVAILABLE = True
+    RTDETR_AVAILABLE = True
 except ImportError:
-    VITPOSE_AVAILABLE = False
+    RTDETR_AVAILABLE = False
 
 class DetectionManager:
     def __init__(self, config, superanimal_model=None):
         self.config = config
         self.superanimal = superanimal_model
+        
+        # If no SuperAnimal provided but needed, create it with config
+        if not self.superanimal and self.config.horse_detector in ['superanimal', 'both']:
+            from models import SuperAnimalQuadruped
+            self.superanimal = SuperAnimalQuadruped(device=self.config.device, config=self.config)  # 🔥 Pass config
         
         # Setup RT-DETR detector
         self.rtdetr_detector = None
@@ -26,7 +31,7 @@ class DetectionManager:
     
     def setup_rtdetr(self):
         if self.config.human_detector == 'rtdetr' or self.config.horse_detector in ['rtdetr', 'both']:
-            if VITPOSE_AVAILABLE:
+            if RTDETR_AVAILABLE:
                 try:
                     self.rtdetr_processor = AutoProcessor.from_pretrained("PekingU/rtdetr_r50vd_coco_o365")
                     self.rtdetr_detector = RTDetrForObjectDetection.from_pretrained("PekingU/rtdetr_r50vd_coco_o365")
