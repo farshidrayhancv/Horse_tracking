@@ -1,5 +1,5 @@
 # Video file path (required) - filename format: horse_XX.mp4 where XX = number of horses
-video_path: inputs/horse_11.mp4  # Will automatically detect 11 horses + 11 jockeys
+video_path: inputs/horse_22.mp4  # Will automatically detect 11 horses + 11 jockeys
 
 # Output settings
 output_path: null  # Auto-generate if null (will include "_tracked_" in filename)
@@ -27,7 +27,7 @@ device: cuda
 
 # Re-identification Pipeline Settings
 enable_reid_pipeline: true
-reid_similarity_threshold: 0.7
+reid_similarity_threshold: 0.5
 reid_embedding_history_size: 5
 enable_mobile_sam: true
 enable_depth_anything: true
