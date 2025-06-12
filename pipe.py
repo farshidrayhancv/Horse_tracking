@@ -1515,7 +1515,7 @@ def main():
         print("- Modular detection and pose estimation")
         print("- Separate confidence thresholds for each model")
         print("- Configuration file support (YAML/JSON)")
-        print("- Supervision Detection class integration (ready for ByteTracker)")
+        print("- Supervision Detection class integration (ready for ByteTrack)")
         print("- Real-time display with controls")
         print("- GPU acceleration support")
         

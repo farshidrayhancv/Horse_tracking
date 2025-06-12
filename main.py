@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import torch
 import warnings
+import re
 from pathlib import Path
 
 # Local imports
@@ -11,6 +12,7 @@ from detectors import DetectionManager
 from pose_estimators import PoseEstimationManager
 from visualizers import Visualizer
 
+# Suppress warnings but keep errors and status prints
 warnings.filterwarnings("ignore")
 
 # Check dependencies
@@ -39,15 +41,19 @@ except ImportError:
 
 try:
     import supervision as sv
-    print("✓ Supervision 0.25.1 for professional visualizations and Detection class")
+    from supervision import ByteTrack
+    print("✓ Supervision 0.25.1 with ByteTrack for professional tracking")
 except ImportError:
-    print("⚠️ Supervision not available - install with: pip install supervision")
+    print("❌ Supervision not available - install with: pip install supervision")
     sv = None
 
 class HybridPoseSystem:
     def __init__(self, video_path: str, config: Config):
         self.video_path = Path(video_path)
         self.config = config
+        
+        # Parse expected counts from filename
+        self.expected_horses, self.expected_jockeys = self.parse_filename_counts()
         
         # Setup video
         self.cap = cv2.VideoCapture(str(self.video_path))
@@ -57,17 +63,50 @@ class HybridPoseSystem:
         self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 25
         
         if self.total_frames <= 0:
             print("⚠️ Warning: Frame count not available, will process until end of video")
             self.total_frames = float('inf')
+        
+        # Setup tracking
+        self.setup_trackers()
         
         # Setup models and components
         self.setup_models()
         
         # Print configuration
         self.config.print_config()
-        print(f"🐴🏇 Configurable Pose System ready: {self.total_frames} frames")
+        print(f"🎯 Expected: {self.expected_horses} horses, {self.expected_jockeys} jockeys")
+        print(f"🐴🏇 Configurable Pose System with Tracking ready: {self.total_frames} frames @ {self.fps} FPS")
+    
+    def parse_filename_counts(self):
+        """Parse filename to extract expected horse/jockey counts"""
+        filename = self.video_path.stem
+        
+        # Look for pattern like horse_11, horse_22, etc.
+        match = re.search(r'horse_(\d+)', filename, re.IGNORECASE)
+        if match:
+            count = int(match.group(1))
+            return count, count  # Same number of horses and jockeys
+        
+        # Default fallback
+        print(f"⚠️ Could not parse count from filename '{filename}', using defaults")
+        return 10, 10  # Default to 10 horses, 10 jockeys
+    
+    def setup_trackers(self):
+        """Initialize ByteTracks for horses and humans"""
+        if not sv:
+            print("❌ Tracking disabled - supervision not available")
+            self.horse_tracker = None
+            self.human_tracker = None
+            return
+        
+        # Initialize trackers with video FPS
+        self.horse_tracker = ByteTrack(frame_rate=int(self.fps))
+        self.human_tracker = ByteTrack(frame_rate=int(self.fps))
+        
+        print(f"✅ ByteTracks initialized @ {self.fps} FPS")
     
     def setup_models(self):
         # Setup SuperAnimal model if needed - 🔥 PASS CONFIG
@@ -84,6 +123,41 @@ class HybridPoseSystem:
         # Setup visualizer
         self.visualizer = Visualizer(self.config, self.superanimal)
     
+    def limit_detections(self, detections, max_count, detection_type="object"):
+        """Limit detections to expected count, keeping highest confidence ones"""
+        if not sv or len(detections) == 0:
+            return detections
+        
+        if len(detections) <= max_count:
+            return detections
+        
+        # Sort by confidence (descending) and take top N
+        sorted_indices = np.argsort(detections.confidence)[::-1]
+        top_indices = sorted_indices[:max_count]
+        
+        limited_detections = sv.Detections(
+            xyxy=detections.xyxy[top_indices],
+            confidence=detections.confidence[top_indices],
+            class_id=detections.class_id[top_indices]
+        )
+        
+        print(f"🎯 Limited {detection_type}: {len(detections)} → {len(limited_detections)} (expected: {max_count})")
+        return limited_detections
+    
+    def associate_poses_with_tracks(self, poses, tracked_detections):
+        """Associate pose results with tracked detection IDs"""
+        if not sv or not poses or len(tracked_detections) == 0:
+            return poses
+        
+        # Add track IDs to pose results
+        for i, pose in enumerate(poses):
+            if i < len(tracked_detections.tracker_id):
+                pose['track_id'] = tracked_detections.tracker_id[i]
+            else:
+                pose['track_id'] = -1  # Untracked
+        
+        return poses
+    
     def process_video(self):
         # Determine output path
         if self.config.output_path:
@@ -91,15 +165,14 @@ class HybridPoseSystem:
         else:
             # Create safe output filename
             input_stem = self.video_path.stem if self.video_path.suffix else self.video_path.name
-            output_path = str(self.video_path.parent / f"{input_stem}_pose_output.mp4")
+            output_path = str(self.video_path.parent / f"{input_stem}_pose_tracked_output.mp4")
         
         print(f"🎬 Processing: {self.video_path}")
         print(f"📤 Output: {output_path}")
         
         # Setup video writer
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        fps = self.cap.get(cv2.CAP_PROP_FPS) or 30
-        out = cv2.VideoWriter(output_path, fourcc, fps, (self.width, self.height))
+        out = cv2.VideoWriter(output_path, fourcc, self.fps, (self.width, self.height))
         
         frame_count = 0
         max_frames = self.config.max_frames or (self.total_frames if self.total_frames != float('inf') else 10000)
@@ -108,19 +181,21 @@ class HybridPoseSystem:
         stats = {
             'humans_detected': 0, 'horses_detected': 0,
             'human_poses': 0, 'horse_poses': 0,
-            'superanimal_wins': 0, 'vitpose_wins': 0
+            'superanimal_wins': 0, 'vitpose_wins': 0,
+            'tracked_horses': 0, 'tracked_humans': 0,
+            'active_horse_tracks': set(), 'active_human_tracks': set()
         }
         
         # Initialize progress bar (only if not displaying)
         if TQDM_AVAILABLE and not self.config.display and self.total_frames != float('inf'):
-            pbar = tqdm(total=max_frames, desc="Processing pose estimation", 
+            pbar = tqdm(total=max_frames, desc="Processing pose estimation with tracking", 
                        bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}')
         else:
             pbar = None
         
         # Setup display window
         if self.config.display:
-            window_name = "Configurable Pose System"
+            window_name = "Configurable Pose System with Tracking"
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
             display_width = min(1200, self.width)
             display_height = int(self.height * (display_width / self.width))
@@ -131,22 +206,46 @@ class HybridPoseSystem:
             if not ret:
                 break
             
-            # Detect objects based on config
+            # 🔥 STEP 1: Detect objects based on config
             human_detections = self.detection_manager.detect_humans(frame)
             horse_detections = self.detection_manager.detect_horses(frame)
             
-            # Filter humans to jockeys only
-            if sv:
-                jockey_detections = self.detection_manager.filter_jockeys(human_detections, horse_detections)
+            # 🔥 STEP 2: Limit detections to expected counts
+            human_detections = self.limit_detections(human_detections, self.expected_jockeys, "jockeys")
+            horse_detections = self.limit_detections(horse_detections, self.expected_horses, "horses")
+            
+            # 🔥 STEP 3: Track detections
+            if sv and self.horse_tracker and self.human_tracker:
+                tracked_horses = self.horse_tracker.update_with_detections(horse_detections)
+                tracked_humans = self.human_tracker.update_with_detections(human_detections)
+                
+                # Update tracking stats
+                if len(tracked_horses) > 0:
+                    stats['active_horse_tracks'].update(tracked_horses.tracker_id)
+                if len(tracked_humans) > 0:
+                    stats['active_human_tracks'].update(tracked_humans.tracker_id)
             else:
-                jockey_detections = human_detections
+                tracked_horses = horse_detections
+                tracked_humans = human_detections
+            
+            # Filter humans to jockeys only (using tracked detections)
+            if sv:
+                jockey_detections = self.detection_manager.filter_jockeys(tracked_humans, tracked_horses)
+            else:
+                jockey_detections = tracked_humans
             
             stats['humans_detected'] += len(jockey_detections) if sv else len(jockey_detections)
-            stats['horses_detected'] += len(horse_detections) if sv else len(horse_detections)
+            stats['horses_detected'] += len(tracked_horses) if sv else len(tracked_horses)
+            stats['tracked_horses'] = len(stats['active_horse_tracks'])
+            stats['tracked_humans'] = len(stats['active_human_tracks'])
             
-            # 🔥 Estimate poses based on config - SOURCE-LEVEL FILTERING HAPPENS HERE
+            # 🔥 STEP 4: Estimate poses based on config - SOURCE-LEVEL FILTERING HAPPENS HERE
             human_poses = self.pose_manager.estimate_human_poses(frame, jockey_detections)
-            horse_poses = self.pose_manager.estimate_horse_poses(frame, horse_detections)
+            horse_poses = self.pose_manager.estimate_horse_poses(frame, tracked_horses)
+            
+            # 🔥 STEP 5: Associate poses with track IDs
+            human_poses = self.associate_poses_with_tracks(human_poses, jockey_detections)
+            horse_poses = self.associate_poses_with_tracks(horse_poses, tracked_horses)
             
             stats['human_poses'] += len(human_poses)
             stats['horse_poses'] += len(horse_poses)
@@ -158,26 +257,26 @@ class HybridPoseSystem:
                 stats['superanimal_wins'] += superanimal_count
                 stats['vitpose_wins'] += vitpose_count
             
-            # 🔥 Visualize everything - NO FILTERING NEEDED (already done at source)
-            frame = self.visualizer.annotate_detections(frame, jockey_detections, horse_detections)
+            # 🔥 STEP 6: Visualize everything with tracking
+            frame = self.visualizer.annotate_detections_with_tracking(frame, jockey_detections, tracked_horses)
             
-            # Draw poses
+            # Draw poses with track IDs
             for pose_result in human_poses:
-                frame = self.visualizer.draw_human_pose(frame, pose_result)
+                frame = self.visualizer.draw_human_pose_with_tracking(frame, pose_result)
             
             for pose_result in horse_poses:
-                frame = self.visualizer.draw_horse_pose(frame, pose_result)
+                frame = self.visualizer.draw_horse_pose_with_tracking(frame, pose_result)
             
             # Add pose method labels
             frame = self.visualizer.draw_pose_labels(frame, horse_poses)
             
-            # Add info overlay
+            # Add info overlay with tracking stats
             human_count = len(jockey_detections) if sv else len(jockey_detections)
-            horse_count = len(horse_detections) if sv else len(horse_detections)
+            horse_count = len(tracked_horses) if sv else len(tracked_horses)
             
-            frame = self.visualizer.draw_info_overlay(
+            frame = self.visualizer.draw_info_overlay_with_tracking(
                 frame, frame_count, max_frames, human_count, horse_count,
-                len(human_poses), len(horse_poses), stats
+                len(human_poses), len(horse_poses), stats, self.expected_horses, self.expected_jockeys
             )
             
             # Write frame to output video
@@ -203,7 +302,7 @@ class HybridPoseSystem:
             
             # Update progress bar (only if available)
             if pbar:
-                pbar.set_postfix_str(f"H:{human_count} Horses:{horse_count}")
+                pbar.set_postfix_str(f"H:{human_count}/{self.expected_jockeys} Horses:{horse_count}/{self.expected_horses} Tracks:H{stats['tracked_humans']}+Ho{stats['tracked_horses']}")
                 pbar.update(1)
         
         self.cap.release()
@@ -217,10 +316,12 @@ class HybridPoseSystem:
         
         print(f"✅ Processing complete!")
         print(f"📊 Final Stats:")
+        print(f"   Expected: {self.expected_horses} horses, {self.expected_jockeys} jockeys")
         print(f"   Humans detected: {stats['humans_detected']}")
         print(f"   Horses detected: {stats['horses_detected']}")
         print(f"   Human poses: {stats['human_poses']}")
         print(f"   Horse poses: {stats['horse_poses']}")
+        print(f"   🔄 Unique tracks: {stats['tracked_humans']} humans, {stats['tracked_horses']} horses")
         
         if self.config.horse_pose_estimator == 'dual':
             print(f"🥊 Competition Results:")

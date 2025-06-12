@@ -38,20 +38,23 @@ class DetectionManager:
                     self.rtdetr_detector.to(self.config.device)
                     print("✅ RT-DETR detector loaded")
                 except Exception as e:
-                    print(f"⚠️ RT-DETR failed: {e}")
+                    print(f"❌ RT-DETR failed: {e}")
     
     def detect_humans(self, frame: np.ndarray):
+        """Detect humans/jockeys in frame"""
         if self.config.human_detector == 'rtdetr' and self.rtdetr_detector:
             return self._detect_rtdetr(frame, class_filter=[0], confidence=self.config.confidence_human_detection)
         else:
             return sv.Detections.empty() if sv else []
     
     def detect_horses(self, frame: np.ndarray):
+        """Detect horses in frame"""
         if self.config.horse_detector == 'rtdetr' and self.rtdetr_detector:
             return self._detect_rtdetr(frame, class_filter=[17], confidence=self.config.confidence_horse_detection)
         elif self.config.horse_detector == 'superanimal' and self.superanimal:
             return self.superanimal.detect_quadrupeds(frame, self.config.confidence_horse_detection)
         elif self.config.horse_detector == 'both':
+            # Primary: RT-DETR, Fallback: SuperAnimal
             horse_detections = self._detect_rtdetr(frame, class_filter=[17], confidence=self.config.confidence_horse_detection)
             if sv and len(horse_detections) == 0 and self.superanimal:
                 horse_detections = self.superanimal.detect_quadrupeds(frame, self.config.confidence_horse_detection)
@@ -60,6 +63,7 @@ class DetectionManager:
             return sv.Detections.empty() if sv else []
     
     def _detect_rtdetr(self, frame: np.ndarray, class_filter: List[int], confidence: float = None):
+        """RT-DETR detection with improved confidence handling for tracking"""
         if not self.rtdetr_detector or not self.rtdetr_processor:
             return sv.Detections.empty() if sv else []
         
@@ -93,6 +97,12 @@ class DetectionManager:
                     filtered_scores = result["scores"][class_mask].cpu().numpy()
                     filtered_labels = result["labels"][class_mask].cpu().numpy()
                     
+                    # Sort by confidence (descending) for better tracking
+                    sort_indices = np.argsort(filtered_scores)[::-1]
+                    filtered_boxes = filtered_boxes[sort_indices]
+                    filtered_scores = filtered_scores[sort_indices]
+                    filtered_labels = filtered_labels[sort_indices]
+                    
                     if sv:
                         return sv.Detections(
                             xyxy=filtered_boxes,
@@ -109,10 +119,11 @@ class DetectionManager:
             return sv.Detections.empty() if sv else []
             
         except Exception as e:
-            print(f"Error in RT-DETR detection: {e}")
+            print(f"❌ Error in RT-DETR detection: {e}")
             return sv.Detections.empty() if sv else []
     
     def filter_jockeys(self, human_detections, horse_detections):
+        """Filter humans that overlap with horses (jockeys)"""
         if not sv:
             return human_detections
         
@@ -144,10 +155,17 @@ class DetectionManager:
                         break
         
         if jockey_indices:
-            return sv.Detections(
+            # Preserve tracking attributes if they exist
+            result_detections = sv.Detections(
                 xyxy=human_detections.xyxy[jockey_indices],
                 confidence=human_detections.confidence[jockey_indices],
                 class_id=human_detections.class_id[jockey_indices]
             )
+            
+            # Copy tracking information if available
+            if hasattr(human_detections, 'tracker_id'):
+                result_detections.tracker_id = human_detections.tracker_id[jockey_indices]
+            
+            return result_detections
         else:
             return sv.Detections.empty()
