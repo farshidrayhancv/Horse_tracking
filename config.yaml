@@ -3,7 +3,7 @@ video_path: inputs/horse_11.mp4  # Will automatically detect 11 horses + 11 jock
 
 # Output settings
 output_path: null  # Auto-generate if null (will include "_tracked_" in filename)
-display: true
+display: false
 
 # Model selection
 human_detector: rtdetr
@@ -24,6 +24,14 @@ jockey_overlap_threshold: 0.4
 # Processing settings
 max_frames: null
 device: cuda
+
+# Re-identification Pipeline Settings
+enable_reid_pipeline: true
+reid_similarity_threshold: 0.7
+reid_embedding_history_size: 5
+enable_mobile_sam: true
+enable_depth_anything: true
+enable_megadescriptor: true
 
 # NOTE: Expected horse/jockey counts are automatically parsed from filename
 # Examples:

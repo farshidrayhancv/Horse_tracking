@@ -11,6 +11,7 @@ from models import SuperAnimalQuadruped
 from detectors import DetectionManager
 from pose_estimators import PoseEstimationManager
 from visualizers import Visualizer
+from reid_pipeline import ReIDPipeline
 
 # Suppress warnings but keep errors and status prints
 warnings.filterwarnings("ignore")
@@ -75,10 +76,21 @@ class HybridPoseSystem:
         # Setup models and components
         self.setup_models()
         
+        # Setup re-identification pipeline
+        self.reid_pipeline = None
+        if self.config.enable_reid_pipeline:
+            try:
+                self.reid_pipeline = ReIDPipeline(self.config)
+                print("✅ Re-identification pipeline initialized")
+            except Exception as e:
+                print(f"❌ Re-identification pipeline failed to initialize: {e}")
+                print("🔄 Continuing without re-identification")
+                self.config.enable_reid_pipeline = False
+        
         # Print configuration
         self.config.print_config()
         print(f"🎯 Expected: {self.expected_horses} horses, {self.expected_jockeys} jockeys")
-        print(f"🐴🏇 Configurable Pose System with Tracking ready: {self.total_frames} frames @ {self.fps} FPS")
+        print(f"🐴🏇 Configurable Pose System with Re-ID ready: {self.total_frames} frames @ {self.fps} FPS")
     
     def parse_filename_counts(self):
         """Parse filename to extract expected horse/jockey counts"""
@@ -141,7 +153,6 @@ class HybridPoseSystem:
             class_id=detections.class_id[top_indices]
         )
         
-        # print(f"🎯 Limited {detection_type}: {len(detections)} → {len(limited_detections)} (expected: {max_count})")
         return limited_detections
     
     def associate_poses_with_tracks(self, poses, tracked_detections):
@@ -165,7 +176,7 @@ class HybridPoseSystem:
         else:
             # Create safe output filename
             input_stem = self.video_path.stem if self.video_path.suffix else self.video_path.name
-            output_path = str(self.video_path.parent / f"{input_stem}_pose_tracked_output.mp4")
+            output_path = str(self.video_path.parent / f"{input_stem}_reid_tracked_output.mp4")
         
         print(f"🎬 Processing: {self.video_path}")
         print(f"📤 Output: {output_path}")
@@ -183,19 +194,20 @@ class HybridPoseSystem:
             'human_poses': 0, 'horse_poses': 0,
             'superanimal_wins': 0, 'vitpose_wins': 0,
             'tracked_horses': 0, 'tracked_humans': 0,
-            'active_horse_tracks': set(), 'active_human_tracks': set()
+            'active_horse_tracks': set(), 'active_human_tracks': set(),
+            'reid_reassignments': 0
         }
         
         # Initialize progress bar (only if not displaying)
         if TQDM_AVAILABLE and not self.config.display and self.total_frames != float('inf'):
-            pbar = tqdm(total=max_frames, desc="Processing pose estimation with tracking", 
+            pbar = tqdm(total=max_frames, desc="Processing with Re-ID pipeline", 
                        bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}')
         else:
             pbar = None
         
         # Setup display window
         if self.config.display:
-            window_name = "Configurable Pose System with Tracking"
+            window_name = "Horse Racing System with Re-Identification"
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
             display_width = min(1200, self.width)
             display_height = int(self.height * (display_width / self.width))
@@ -234,16 +246,31 @@ class HybridPoseSystem:
             else:
                 jockey_detections = tracked_humans
             
+            # 🔥 STEP 4: Apply Re-identification Pipeline
+            depth_map = None  # Initialize depth_map
+            if self.reid_pipeline and self.config.enable_reid_pipeline:
+                # Process horses with re-identification (new logic: full image depth + bbox SAM)
+                horse_rgb_crops, horse_depth_crops, depth_map, horse_reid_features = self.reid_pipeline.process_frame(frame, tracked_horses)
+                tracked_horses_enhanced = self.reid_pipeline.enhance_tracking(tracked_horses, horse_reid_features)
+                
+                # Process jockeys with re-identification  
+                jockey_rgb_crops, jockey_depth_crops, _, jockey_reid_features = self.reid_pipeline.process_frame(frame, jockey_detections)
+                jockey_detections_enhanced = self.reid_pipeline.enhance_tracking(jockey_detections, jockey_reid_features)
+                
+                # Update detections with enhanced tracking
+                tracked_horses = tracked_horses_enhanced
+                jockey_detections = jockey_detections_enhanced
+            
             stats['humans_detected'] += len(jockey_detections) if sv else len(jockey_detections)
             stats['horses_detected'] += len(tracked_horses) if sv else len(tracked_horses)
             stats['tracked_horses'] = len(stats['active_horse_tracks'])
             stats['tracked_humans'] = len(stats['active_human_tracks'])
             
-            # 🔥 STEP 4: Estimate poses based on config - SOURCE-LEVEL FILTERING HAPPENS HERE
+            # 🔥 STEP 5: Estimate poses based on config
             human_poses = self.pose_manager.estimate_human_poses(frame, jockey_detections)
             horse_poses = self.pose_manager.estimate_horse_poses(frame, tracked_horses)
             
-            # 🔥 STEP 5: Associate poses with track IDs
+            # 🔥 STEP 6: Associate poses with track IDs
             human_poses = self.associate_poses_with_tracks(human_poses, jockey_detections)
             horse_poses = self.associate_poses_with_tracks(horse_poses, tracked_horses)
             
@@ -257,7 +284,7 @@ class HybridPoseSystem:
                 stats['superanimal_wins'] += superanimal_count
                 stats['vitpose_wins'] += vitpose_count
             
-            # 🔥 STEP 6: Visualize everything with tracking
+            # 🔥 STEP 7: Visualize everything with tracking and re-ID
             frame = self.visualizer.annotate_detections_with_tracking(frame, jockey_detections, tracked_horses)
             
             # Draw poses with track IDs
@@ -270,7 +297,15 @@ class HybridPoseSystem:
             # Add pose method labels
             frame = self.visualizer.draw_pose_labels(frame, horse_poses)
             
-            # Add info overlay with tracking stats
+            # Add depth visualization if available
+            if self.reid_pipeline and self.config.enable_reid_pipeline and depth_map is not None:
+                # Add small depth map overlay
+                depth_display = cv2.resize(depth_map, (200, 150))
+                depth_colored = cv2.applyColorMap(depth_display, cv2.COLORMAP_JET)
+                frame[10:160, self.width-210:self.width-10] = depth_colored
+                cv2.putText(frame, "Depth", (self.width-200, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+            
+            # Add info overlay with tracking and re-ID stats
             human_count = len(jockey_detections) if sv else len(jockey_detections)
             horse_count = len(tracked_horses) if sv else len(tracked_horses)
             
@@ -302,7 +337,8 @@ class HybridPoseSystem:
             
             # Update progress bar (only if available)
             if pbar:
-                pbar.set_postfix_str(f"H:{human_count}/{self.expected_jockeys} Horses:{horse_count}/{self.expected_horses} Tracks:H{stats['tracked_humans']}+Ho{stats['tracked_horses']}")
+                reid_status = "Re-ID:ON" if self.config.enable_reid_pipeline else "Re-ID:OFF"
+                pbar.set_postfix_str(f"H:{human_count}/{self.expected_jockeys} Ho:{horse_count}/{self.expected_horses} T:H{stats['tracked_humans']}+Ho{stats['tracked_horses']} {reid_status}")
                 pbar.update(1)
         
         self.cap.release()
@@ -322,6 +358,10 @@ class HybridPoseSystem:
         print(f"   Human poses: {stats['human_poses']}")
         print(f"   Horse poses: {stats['horse_poses']}")
         print(f"   🔄 Unique tracks: {stats['tracked_humans']} humans, {stats['tracked_horses']} horses")
+        
+        if self.config.enable_reid_pipeline:
+            print(f"🔍 Re-identification enabled:")
+            print(f"   - Track reassignments: {stats.get('reid_reassignments', 0)}")
         
         if self.config.horse_pose_estimator == 'dual':
             print(f"🥊 Competition Results:")

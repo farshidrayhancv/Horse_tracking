@@ -19,6 +19,7 @@ class Visualizer:
         self.keypoint_color = (0, 255, 255) # Cyan
         self.text_color = (255, 255, 255)   # White
         self.track_color = (255, 255, 0)    # Yellow for track IDs
+        self.reid_color = (0, 255, 0)       # Green for re-ID indicators
         
         # Setup annotators with automatic track-based coloring
         if sv:
@@ -193,22 +194,36 @@ class Visualizer:
             if len(human_detections) > 0:
                 frame = self.triangle_annotator.annotate(frame, human_detections)
                 
-                # Add track ID labels
+                # Add track ID labels with re-ID indicator
                 if hasattr(human_detections, 'tracker_id'):
                     for i, (box, track_id) in enumerate(zip(human_detections.xyxy, human_detections.tracker_id)):
                         x1, y1, x2, y2 = box.astype(int)
-                        cv2.putText(frame, f"J{track_id}", (x1, y1-5), 
+                        
+                        # Check if this was re-identified (you can add a flag to detections)
+                        reid_indicator = ""
+                        if hasattr(human_detections, 'reid_flag') and human_detections.reid_flag[i]:
+                            reid_indicator = "*"
+                            cv2.circle(frame, (x1+10, y1+10), 5, self.reid_color, -1)
+                        
+                        cv2.putText(frame, f"J{track_id}{reid_indicator}", (x1, y1-5), 
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.track_color, 2)
             
             # Horse detections with automatic track-based colors (triangles)
             if len(horse_detections) > 0:
                 frame = self.triangle_annotator.annotate(frame, horse_detections)
                 
-                # Add track ID labels
+                # Add track ID labels with re-ID indicator
                 if hasattr(horse_detections, 'tracker_id'):
                     for i, (box, track_id) in enumerate(zip(horse_detections.xyxy, horse_detections.tracker_id)):
                         x1, y1, x2, y2 = box.astype(int)
-                        cv2.putText(frame, f"H{track_id}", (x1, y1-5), 
+                        
+                        # Check if this was re-identified
+                        reid_indicator = ""
+                        if hasattr(horse_detections, 'reid_flag') and horse_detections.reid_flag[i]:
+                            reid_indicator = "*"
+                            cv2.circle(frame, (x1+10, y1+10), 5, self.reid_color, -1)
+                        
+                        cv2.putText(frame, f"H{track_id}{reid_indicator}", (x1, y1-5), 
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.track_color, 2)
                 
         except Exception as e:
@@ -266,7 +281,7 @@ class Visualizer:
                                        human_count: int, horse_count: int, human_poses: int, 
                                        horse_poses: int, stats: dict = None, 
                                        expected_horses: int = 10, expected_jockeys: int = 10):
-        """Draw info overlay with tracking statistics"""
+        """Draw info overlay with tracking and re-identification statistics"""
         total_display = str(max_frames) if max_frames != float('inf') else "∞"
         
         info_lines = [
@@ -284,6 +299,15 @@ class Visualizer:
             tracked_horses = stats.get('tracked_horses', 0)
             info_lines.append(f"🔄 Unique Tracks - Humans:{tracked_humans} Horses:{tracked_horses}")
         
+        # Add re-identification info
+        if self.config.enable_reid_pipeline:
+            info_lines.append(f"🔍 Re-ID Pipeline: FullImage-Depth → BBox-SAM → MegaDescriptor")
+            reid_reassignments = stats.get('reid_reassignments', 0) if stats else 0
+            info_lines.append(f"   Track reassignments: {reid_reassignments} | Threshold: {self.config.reid_similarity_threshold}")
+            info_lines.append(f"   Components: SAM:{self.config.enable_mobile_sam} Depth:{self.config.enable_depth_anything} ReID:{self.config.enable_megadescriptor}")
+        else:
+            info_lines.append(f"🔍 Re-ID Pipeline: DISABLED")
+        
         info_lines.append(f"🎨 Auto Colors: Each track gets unique color from supervision palette")
         info_lines.append(f"SOURCE Filtering: Human:{self.config.confidence_human_pose} Horse-ViTPose:{self.config.confidence_horse_pose_vitpose}")
         
@@ -291,7 +315,7 @@ class Visualizer:
             info_lines.append(f"Competition - SuperAnimal:{stats.get('superanimal_wins', 0)} ViTPose:{stats.get('vitpose_wins', 0)}")
         
         if self.config.display:
-            info_lines.append(f"Controls: SPACE=Pause Q=Quit")
+            info_lines.append(f"Controls: SPACE=Pause Q=Quit | Green dots = Re-identified tracks")
         
         # Semi-transparent background
         overlay = frame.copy()

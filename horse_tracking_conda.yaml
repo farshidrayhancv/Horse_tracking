@@ -29,7 +29,12 @@ dependencies:
     
     # SuperAnimal support
     - dlclibrary==0.0.7
+
+    # Advanced models and utilities
+    - git+https://github.com/ChaoningZhang/MobileSAM.git
+    - git+https://github.com/LiheYoung/Depth-Anything.git
     
     # Core dependencies used in code
     - requests
     - tqdm
+

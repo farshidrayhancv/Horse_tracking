@@ -48,6 +48,14 @@ class Config:
         self.output_path = None
         self.device = "cpu"
         self.video_path = None
+
+
+        self.enable_reid_pipeline = False
+        self.reid_similarity_threshold = 0.7
+        self.reid_embedding_history_size = 5
+        self.enable_mobile_sam = True
+        self.enable_depth_anything = True
+        self.enable_megadescriptor = True
         
         if config_file:
             self.load_from_file(config_file)
