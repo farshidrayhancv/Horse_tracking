@@ -12,13 +12,20 @@ class Visualizer:
         self.config = config
         self.superanimal = superanimal_model
         
-        # Setup colors
-        self.human_color = (0, 255, 0)      # Green for jockeys
-        self.superanimal_color = (255, 0, 0)  # Red for SuperAnimal horses
-        self.vitpose_horse_color = (255, 0, 255)  # Magenta for ViTPose horses
+        # Setup automatic color assignment using supervision
+        self.color_palette = sv.ColorPalette.DEFAULT if sv else None
+        
+        # Fixed colors for non-tracking elements
         self.keypoint_color = (0, 255, 255) # Cyan
         self.text_color = (255, 255, 255)   # White
         self.track_color = (255, 255, 0)    # Yellow for track IDs
+        
+        # Setup annotators with automatic track-based coloring
+        if sv:
+            self.triangle_annotator = sv.TriangleAnnotator(
+                base=15, height=20, 
+                color_lookup=sv.ColorLookup.TRACK
+            )
         
         # Define skeletons
         self.human_skeleton = [
@@ -28,12 +35,35 @@ class Visualizer:
             (11, 13), (13, 15), (12, 14), (14, 16)  # Legs
         ]
     
+    def get_track_color(self, track_id):
+        """Get unique color for a track ID using supervision's color palette"""
+        if sv and self.color_palette and track_id >= 0:
+            color = self.color_palette.by_idx(track_id)
+            return (color.b, color.g, color.r)  # Convert RGB to BGR for OpenCV
+        else:
+            # Fallback colors for untracked objects
+            fallback_colors = [
+                (0, 255, 0),    # Green
+                (255, 0, 0),    # Red  
+                (255, 0, 255),  # Magenta
+                (0, 255, 255),  # Cyan
+                (255, 255, 0),  # Yellow
+                (255, 165, 0),  # Orange
+                (128, 0, 128),  # Purple
+                (255, 192, 203) # Pink
+            ]
+            return fallback_colors[abs(track_id) % len(fallback_colors)] if track_id >= 0 else (128, 128, 128)
+    
     def draw_human_pose(self, frame: np.ndarray, pose_result: Dict, min_confidence: float = None):
         """
-        🔥 SIMPLIFIED: Just draws keypoints - confidence filtering already done at source
+        🔥 SIMPLIFIED: Just draws keypoints with track-based colors - confidence filtering already done at source
         """
         if 'keypoints' not in pose_result or 'scores' not in pose_result:
             return frame
+        
+        # Get unique color based on track ID
+        track_id = pose_result.get('track_id', -1)
+        color = self.get_track_color(track_id)
         
         keypoints = pose_result['keypoints'].cpu().numpy() if hasattr(pose_result['keypoints'], 'cpu') else pose_result['keypoints']
         scores = pose_result['scores'].cpu().numpy() if hasattr(pose_result['scores'], 'cpu') else pose_result['scores']
@@ -44,7 +74,7 @@ class Visualizer:
                 scores[start_idx] > 0 and scores[end_idx] > 0):
                 start_point = (int(keypoints[start_idx][0]), int(keypoints[start_idx][1]))
                 end_point = (int(keypoints[end_idx][0]), int(keypoints[end_idx][1]))
-                cv2.line(frame, start_point, end_point, self.human_color, 2)
+                cv2.line(frame, start_point, end_point, color, 2)
         
         # Draw keypoints - only valid ones (confidence > 0)
         valid_count = 0
@@ -52,13 +82,13 @@ class Visualizer:
             if score > 0:  # Valid keypoint (already filtered at source)
                 center = (int(kpt[0]), int(kpt[1]))
                 cv2.circle(frame, center, 4, self.keypoint_color, -1)
-                cv2.circle(frame, center, 5, self.human_color, 1)
+                cv2.circle(frame, center, 5, color, 1)
                 valid_count += 1
         
         return frame
     
     def draw_human_pose_with_tracking(self, frame: np.ndarray, pose_result: Dict, min_confidence: float = None):
-        """Draw human pose with track ID"""
+        """Draw human pose with track ID using track-based colors"""
         frame = self.draw_human_pose(frame, pose_result, min_confidence)
         
         # Add track ID if available
@@ -83,7 +113,7 @@ class Visualizer:
     
     def draw_horse_pose(self, frame: np.ndarray, pose_result: Dict, min_confidence: float = None):
         """
-        🔥 SIMPLIFIED: Just draws keypoints - confidence filtering already done at source
+        🔥 SIMPLIFIED: Just draws keypoints with track-based colors - confidence filtering already done at source
         """
         if 'keypoints' not in pose_result or 'method' not in pose_result:
             return frame
@@ -91,12 +121,14 @@ class Visualizer:
         keypoints = pose_result['keypoints']
         method = pose_result['method']
         
-        # Choose color and skeleton based on method
+        # Get unique color based on track ID
+        track_id = pose_result.get('track_id', -1)
+        color = self.get_track_color(track_id)
+        
+        # Choose skeleton based on method
         if method == 'SuperAnimal':
-            color = self.superanimal_color
             skeleton = self.superanimal.skeleton if self.superanimal else []
         else:  # ViTPose
-            color = self.vitpose_horse_color
             skeleton = self.human_skeleton  # Use human skeleton for ViTPose horses
         
         # Draw skeleton - only valid keypoints (coordinates != -1, confidence > 0)
@@ -123,7 +155,7 @@ class Visualizer:
         return frame
     
     def draw_horse_pose_with_tracking(self, frame: np.ndarray, pose_result: Dict, min_confidence: float = None):
-        """Draw horse pose with track ID"""
+        """Draw horse pose with track ID using track-based colors"""
         frame = self.draw_horse_pose(frame, pose_result, min_confidence)
         
         # Add track ID if available
@@ -152,63 +184,58 @@ class Visualizer:
         return self.annotate_detections_with_tracking(frame, human_detections, horse_detections)
     
     def annotate_detections_with_tracking(self, frame: np.ndarray, human_detections, horse_detections):
-        """Annotate detections with track IDs"""
+        """Annotate detections with automatic track-based colors using supervision"""
         if not sv:
             return frame
         
         try:
-            # Human detections with track IDs (green triangles)
+            # Human detections with automatic track-based colors (triangles)
             if len(human_detections) > 0:
-                triangle_annotator = sv.TriangleAnnotator(
-                    base=15, height=20, color=sv.Color.GREEN
-                )
-                frame = triangle_annotator.annotate(frame, human_detections)
+                frame = self.triangle_annotator.annotate(frame, human_detections)
                 
-                # Add track IDs for humans
+                # Add track ID labels
                 if hasattr(human_detections, 'tracker_id'):
                     for i, (box, track_id) in enumerate(zip(human_detections.xyxy, human_detections.tracker_id)):
                         x1, y1, x2, y2 = box.astype(int)
                         cv2.putText(frame, f"J{track_id}", (x1, y1-5), 
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.track_color, 2)
             
-            # Horse detections with track IDs (red triangles)
+            # Horse detections with automatic track-based colors (triangles)
             if len(horse_detections) > 0:
-                triangle_annotator = sv.TriangleAnnotator(
-                    base=15, height=20, color=sv.Color.RED
-                )
-                frame = triangle_annotator.annotate(frame, horse_detections)
+                frame = self.triangle_annotator.annotate(frame, horse_detections)
                 
-                # Add track IDs for horses
+                # Add track ID labels
                 if hasattr(horse_detections, 'tracker_id'):
                     for i, (box, track_id) in enumerate(zip(horse_detections.xyxy, horse_detections.tracker_id)):
                         x1, y1, x2, y2 = box.astype(int)
                         cv2.putText(frame, f"H{track_id}", (x1, y1-5), 
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.track_color, 2)
                 
-        except Exception:
-            # Fallback to rectangles with track IDs
+        except Exception as e:
+            print(f"⚠️ Supervision annotation failed, using fallback: {e}")
+            # Fallback to manual rectangles with track-based colors
             if len(human_detections) > 0:
                 for i, box in enumerate(human_detections.xyxy):
                     x1, y1, x2, y2 = box.astype(int)
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), self.human_color, 2)
-                    
                     track_id = human_detections.tracker_id[i] if hasattr(human_detections, 'tracker_id') and i < len(human_detections.tracker_id) else i+1
+                    color = self.get_track_color(track_id)
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                     cv2.putText(frame, f"J{track_id}", (x1, y1-10), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, self.track_color, 2)
             
             if len(horse_detections) > 0:
                 for i, box in enumerate(horse_detections.xyxy):
                     x1, y1, x2, y2 = box.astype(int)
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), self.superanimal_color, 2)
-                    
                     track_id = horse_detections.tracker_id[i] if hasattr(horse_detections, 'tracker_id') and i < len(horse_detections.tracker_id) else i+1
+                    color = self.get_track_color(track_id)
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                     cv2.putText(frame, f"H{track_id}", (x1, y1-10), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, self.track_color, 2)
         
         return frame
     
     def draw_pose_labels(self, frame: np.ndarray, horse_poses: list):
-        """Draw pose method labels with track IDs"""
+        """Draw pose method labels with track-based colors"""
         for pose_result in horse_poses:
             if 'box' in pose_result and 'method' in pose_result:
                 box = pose_result['box']
@@ -217,7 +244,8 @@ class Visualizer:
                 track_id = pose_result.get('track_id', -1)
                 x1, y1, x2, y2 = box.astype(int)
                 
-                color = self.superanimal_color if method == 'SuperAnimal' else self.vitpose_horse_color
+                # Use track-based color instead of method-based color
+                color = self.get_track_color(track_id)
                 kp_count = "39kp" if method == 'SuperAnimal' else "17kp"
                 
                 track_str = f" T{track_id}" if track_id >= 0 else ""
@@ -256,6 +284,7 @@ class Visualizer:
             tracked_horses = stats.get('tracked_horses', 0)
             info_lines.append(f"🔄 Unique Tracks - Humans:{tracked_humans} Horses:{tracked_horses}")
         
+        info_lines.append(f"🎨 Auto Colors: Each track gets unique color from supervision palette")
         info_lines.append(f"SOURCE Filtering: Human:{self.config.confidence_human_pose} Horse-ViTPose:{self.config.confidence_horse_pose_vitpose}")
         
         if self.config.horse_pose_estimator == 'dual' and stats:
