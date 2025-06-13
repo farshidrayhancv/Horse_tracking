@@ -90,7 +90,7 @@ class HybridPoseSystem:
         # Print configuration
         self.config.print_config()
         print(f"🎯 Expected: {self.expected_horses} horses, {self.expected_jockeys} jockeys")
-        print(f"🐴🏇 Configurable Pose System with Re-ID ready: {self.total_frames} frames @ {self.fps} FPS")
+        print(f"🐴🏇 Configurable Pose System with RGB-D Re-ID ready: {self.total_frames} frames @ {self.fps} FPS")
     
     def parse_filename_counts(self):
         """Parse filename to extract expected horse/jockey counts"""
@@ -155,6 +155,66 @@ class HybridPoseSystem:
         
         return limited_detections
     
+    def visualize_segmentation_masks(self, segmentation_masks, tracked_horses, frame_shape):
+        """Create visualization showing only segmentation masks on blank background"""
+        # Create blank canvas (black background)
+        mask_canvas = np.zeros((frame_shape[0], frame_shape[1], 3), dtype=np.uint8)
+        
+        if segmentation_masks and len(segmentation_masks) > 0:
+            
+            # Draw each horse mask with unique colors
+            for i, mask in enumerate(segmentation_masks):
+                if mask is not None:
+                    
+                    # Get track-based color - ensure we have a valid color
+                    if sv and len(tracked_horses) > 0 and i < len(tracked_horses.xyxy):
+                        track_id = tracked_horses.tracker_id[i] if hasattr(tracked_horses, 'tracker_id') and i < len(tracked_horses.tracker_id) else i
+                        color = self.visualizer.get_track_color(track_id)
+                    else:
+                        # Fallback colors
+                        colors = [(0, 255, 0), (255, 0, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255), (0, 255, 255)]
+                        color = colors[i % len(colors)]
+                    
+                    # Fill mask area with color
+                    mask_canvas[mask] = color
+                    
+                    # Add white contour outline for better visibility
+                    mask_area = mask.astype(np.uint8) * 255
+                    contours, _ = cv2.findContours(mask_area, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    cv2.drawContours(mask_canvas, contours, -1, (255, 255, 255), 2)
+        else:
+            # print("Debug: No segmentation masks to display")
+            pass
+        
+        return mask_canvas
+
+    def visualize_depth_with_masks(self, depth_map, segmentation_masks, tracked_horses):
+        """Create depth visualization with highlighted horse segmentation masks"""
+        # Convert depth to color map
+        depth_colored = cv2.applyColorMap(depth_map, cv2.COLORMAP_JET)
+        
+        if segmentation_masks and sv and len(tracked_horses) > 0:
+            # Overlay each horse mask with unique colors
+            for i, (mask, box) in enumerate(zip(segmentation_masks, tracked_horses.xyxy)):
+                if mask is not None:
+                    # Get track-based color
+                    track_id = tracked_horses.tracker_id[i] if hasattr(tracked_horses, 'tracker_id') and i < len(tracked_horses.tracker_id) else i
+                    color = self.visualizer.get_track_color(track_id)
+                    
+                    # Create colored mask overlay
+                    colored_mask = np.zeros_like(depth_colored)
+                    colored_mask[mask] = color
+                    
+                    # Blend with depth map
+                    mask_area = mask.astype(np.uint8) * 255
+                    depth_colored = cv2.addWeighted(depth_colored, 0.7, colored_mask, 0.3, 0)
+                    
+                    # Add contour outline
+                    contours, _ = cv2.findContours(mask_area, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    cv2.drawContours(depth_colored, contours, -1, color, 2)
+        
+        return depth_colored
+
     def associate_poses_with_tracks(self, poses, tracked_detections):
         """Associate pose results with tracked detection IDs"""
         if not sv or not poses or len(tracked_detections) == 0:
@@ -176,7 +236,7 @@ class HybridPoseSystem:
         else:
             # Create safe output filename
             input_stem = self.video_path.stem if self.video_path.suffix else self.video_path.name
-            output_path = str(self.video_path.parent / f"{input_stem}_reid_tracked_output.mp4")
+            output_path = str(self.video_path.parent / f"{input_stem}_rgb_d_reid_tracked_output.mp4")
         
         print(f"🎬 Processing: {self.video_path}")
         print(f"📤 Output: {output_path}")
@@ -200,14 +260,14 @@ class HybridPoseSystem:
         
         # Initialize progress bar (only if not displaying)
         if TQDM_AVAILABLE and not self.config.display and self.total_frames != float('inf'):
-            pbar = tqdm(total=max_frames, desc="Processing with Re-ID pipeline", 
+            pbar = tqdm(total=max_frames, desc="Processing with RGB-D Re-ID pipeline", 
                        bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}')
         else:
             pbar = None
         
         # Setup display window
         if self.config.display:
-            window_name = "Horse Racing System with Re-Identification"
+            window_name = "Horse Racing System with RGB-D Re-Identification"
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
             display_width = min(1200, self.width)
             display_height = int(self.height * (display_width / self.width))
@@ -246,16 +306,19 @@ class HybridPoseSystem:
             else:
                 jockey_detections = tracked_humans
             
-            # 🔥 STEP 4: Apply Re-identification Pipeline
-            depth_map = None  # Initialize depth_map
+            # 🔥 STEP 4: Apply Enhanced RGB-D Re-identification Pipeline
+            depth_map = None
             if self.reid_pipeline and self.config.enable_reid_pipeline:
-                # Process horses with re-identification (new logic: full image depth + bbox SAM)
-                horse_rgb_crops, horse_depth_crops, depth_map, horse_reid_features = self.reid_pipeline.process_frame(frame, tracked_horses)
-                tracked_horses_enhanced = self.reid_pipeline.enhance_tracking(tracked_horses, horse_reid_features)
+                # Process horses with RGB-D re-identification
+                horse_rgb_crops, horse_depth_crops, depth_map, horse_reid_features, horse_depth_stats = self.reid_pipeline.process_frame(frame, tracked_horses)
+                tracked_horses_enhanced = self.reid_pipeline.enhance_tracking(tracked_horses, horse_reid_features, horse_depth_stats)
                 
-                # Process jockeys with re-identification  
-                jockey_rgb_crops, jockey_depth_crops, _, jockey_reid_features = self.reid_pipeline.process_frame(frame, jockey_detections)
-                jockey_detections_enhanced = self.reid_pipeline.enhance_tracking(jockey_detections, jockey_reid_features)
+                # Process jockeys with RGB-D re-identification  
+                jockey_rgb_crops, jockey_depth_crops, _, jockey_reid_features, jockey_depth_stats = self.reid_pipeline.process_frame(frame, jockey_detections)
+                jockey_detections_enhanced = self.reid_pipeline.enhance_tracking(jockey_detections, jockey_reid_features, jockey_depth_stats)
+                
+                # Get current reassignment count
+                stats['reid_reassignments'] = self.reid_pipeline.get_reassignment_count()
                 
                 # Update detections with enhanced tracking
                 tracked_horses = tracked_horses_enhanced
@@ -284,7 +347,7 @@ class HybridPoseSystem:
                 stats['superanimal_wins'] += superanimal_count
                 stats['vitpose_wins'] += vitpose_count
             
-            # 🔥 STEP 7: Visualize everything with tracking and re-ID
+            # 🔥 STEP 7: Visualize everything with tracking and RGB-D re-ID
             frame = self.visualizer.annotate_detections_with_tracking(frame, jockey_detections, tracked_horses)
             
             # Draw poses with track IDs
@@ -297,15 +360,25 @@ class HybridPoseSystem:
             # Add pose method labels
             frame = self.visualizer.draw_pose_labels(frame, horse_poses)
             
-            # Add depth visualization if available
+            # Add enhanced depth and segmentation visualization
             if self.reid_pipeline and self.config.enable_reid_pipeline and depth_map is not None:
-                # Add small depth map overlay
-                depth_display = cv2.resize(depth_map, (200, 150))
-                depth_colored = cv2.applyColorMap(depth_display, cv2.COLORMAP_JET)
-                frame[10:160, self.width-210:self.width-10] = depth_colored
-                cv2.putText(frame, "Depth", (self.width-200, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+                # Get segmentation masks for visualization
+                segmentation_masks = self.reid_pipeline.get_current_masks()
+                
+                # Create depth visualization with highlighted horse masks (top right)
+                depth_with_masks = self.visualize_depth_with_masks(depth_map, segmentation_masks, tracked_horses)
+                depth_display = cv2.resize(depth_with_masks, (300, 200))
+                frame[10:210, self.width-310:self.width-10] = depth_display
+                cv2.putText(frame, "Depth + Horse Masks", (self.width-300, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+                cv2.putText(frame, f"Reassign: {stats['reid_reassignments']}", (self.width-300, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255,255,255), 1)
+                
+                # Create segmentation masks only visualization (bottom left)
+                masks_only = self.visualize_segmentation_masks(segmentation_masks, tracked_horses, frame.shape)
+                masks_display = cv2.resize(masks_only, (300, 200))
+                frame[self.height-210:self.height-10, 10:310] = masks_display
+                cv2.putText(frame, "Segmentation Masks", (20, self.height-220), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
             
-            # Add info overlay with tracking and re-ID stats
+            # Add info overlay with tracking and RGB-D re-ID stats
             human_count = len(jockey_detections) if sv else len(jockey_detections)
             horse_count = len(tracked_horses) if sv else len(tracked_horses)
             
@@ -337,7 +410,7 @@ class HybridPoseSystem:
             
             # Update progress bar (only if available)
             if pbar:
-                reid_status = "Re-ID:ON" if self.config.enable_reid_pipeline else "Re-ID:OFF"
+                reid_status = f"RGB-D:ON({stats['reid_reassignments']})" if self.config.enable_reid_pipeline else "Re-ID:OFF"
                 pbar.set_postfix_str(f"H:{human_count}/{self.expected_jockeys} Ho:{horse_count}/{self.expected_horses} T:H{stats['tracked_humans']}+Ho{stats['tracked_horses']} {reid_status}")
                 pbar.update(1)
         
@@ -360,8 +433,10 @@ class HybridPoseSystem:
         print(f"   🔄 Unique tracks: {stats['tracked_humans']} humans, {stats['tracked_horses']} horses")
         
         if self.config.enable_reid_pipeline:
-            print(f"🔍 Re-identification enabled:")
-            print(f"   - Track reassignments: {stats.get('reid_reassignments', 0)}")
+            print(f"🔍 RGB-D Re-identification enabled:")
+            print(f"   - Track reassignments: {stats['reid_reassignments']}")
+            print(f"   - Features: RGB (70%) + Depth shape (30%)")
+            print(f"   - Components: Depth-Anything → MobileSAM → MegaDescriptor")
         
         if self.config.horse_pose_estimator == 'dual':
             print(f"🥊 Competition Results:")

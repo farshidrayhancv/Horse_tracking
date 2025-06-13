@@ -1,13 +1,13 @@
 # Video file path (required) - filename format: horse_XX.mp4 where XX = number of horses
-video_path: inputs/horse_22.mp4  # Will automatically detect 11 horses + 11 jockeys
+video_path: inputs/horse_11.mp4  # Will automatically detect 22 horses + 22 jockeys
 
 # Output settings
-output_path: null  # Auto-generate if null (will include "_tracked_" in filename)
+output_path: null  # Auto-generate if null (will include "_rgb_d_reid_tracked_" in filename)
 display: false
 
 # Model selection
 human_detector: rtdetr
-horse_detector: rtdetr  # Options: rtdetr, superanimal ( NOT RECOMMENDED VERY SLOW ), both
+horse_detector: rtdetr  # Options: rtdetr, superanimal (NOT RECOMMENDED VERY SLOW), both
 human_pose_estimator: vitpose
 horse_pose_estimator: superanimal # Options: superanimal (better), vitpose, dual
 
@@ -25,16 +25,31 @@ jockey_overlap_threshold: 0.4
 max_frames: null
 device: cuda
 
-# Re-identification Pipeline Settings
+# Enhanced RGB-D Re-identification Pipeline Settings
 enable_reid_pipeline: true
-reid_similarity_threshold: 0.5
-reid_embedding_history_size: 5
-enable_mobile_sam: true
-enable_depth_anything: true
-enable_megadescriptor: true
+reid_similarity_threshold: 0.3  # Threshold for RGB-D feature matching
+reid_embedding_history_size: 10  # Number of embeddings to store per track
+enable_mobile_sam: true          # Enable MobileSAM for precise segmentation
+enable_depth_anything: true      # Enable Depth-Anything for depth estimation
+enable_megadescriptor: true      # Enable MegaDescriptor for feature extraction
+
+# RGB-D Fusion Settings (Advanced)
+rgb_weight: 0.5                  # Weight for RGB features (0.0-1.0)
+depth_weight: 0.5                # Weight for depth shape features (0.0-1.0)
+depth_shape_consistency: true    # Enable depth shape consistency checking
+consistency_bonus_threshold: 0.4 # Threshold for consistency bonus
 
 # NOTE: Expected horse/jockey counts are automatically parsed from filename
 # Examples:
 #   horse_11.mp4 -> 11 horses, 11 jockeys
 #   horse_22.mp4 -> 22 horses, 22 jockeys
 #   horse_8.mp4  -> 8 horses, 8 jockeys
+
+# RGB-D Re-ID Pipeline Overview:
+# 1. Depth-Anything estimates full-image depth map
+# 2. MobileSAM segments objects within bounding boxes
+# 3. RGB and depth crops are extracted with segmentation masks
+# 4. MegaDescriptor extracts features from both RGB and depth
+# 5. Features are fused with weighted combination (70% RGB + 30% depth)
+# 6. Depth shape statistics provide geometric consistency
+# 7. Enhanced matching considers both appearance and shape similarity

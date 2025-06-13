@@ -32,7 +32,7 @@ except ImportError:
 
 
 class ReIDPipeline:
-    """Complete re-identification pipeline: Detection → Depth (full image) → MobileSAM (bbox) → MegaDescriptor"""
+    """Complete RGB-D re-identification pipeline: Detection → Depth (full image) → MobileSAM (bbox) → RGB-D MegaDescriptor"""
     
     def __init__(self, config):
         self.config = config
@@ -45,8 +45,13 @@ class ReIDPipeline:
         self.reid_method = None
         
         # Track embeddings for re-identification
-        self.track_embeddings = {}  # track_id -> list of embeddings
-        self.embedding_history_size = 5
+        self.track_embeddings = {}  # track_id -> list of RGB-D embeddings
+        self.track_depth_stats = {}  # track_id -> list of depth shape statistics
+        self.embedding_history_size = 10
+        self.reassignment_count = 0
+        
+        # Store current frame's segmentation masks for visualization
+        self.current_masks = []
         
         self.setup_mobile_sam()
         self.setup_depth_anything()
@@ -152,20 +157,6 @@ class ReIDPipeline:
         except Exception as e:
             print(f"❌ MegaDescriptor direct loading failed: {e}")
             print("This model has compatibility issues with current transformers library")
-
-                
-            # Final fallback to CLIP
-            print("🔄 Falling back to CLIP for re-identification...")
-            model_name = "openai/clip-vit-base-patch32"
-            self.reid_model = CLIPModel.from_pretrained(model_name)
-            self.reid_processor = CLIPProcessor.from_pretrained(model_name)
-            self.reid_model.to(self.device)
-            self.reid_model.eval()
-            self.reid_method = "clip"
-            print("✅ CLIP loaded as fallback")
-                
-        except Exception as e:
-            print(f"❌ Re-identification setup failed completely: {e}")
     
     def estimate_depth_full_image(self, frame: np.ndarray) -> np.ndarray:
         """Estimate depth map for the entire image using HuggingFace pipeline"""
@@ -199,6 +190,8 @@ class ReIDPipeline:
     
     def segment_and_crop_with_depth(self, frame: np.ndarray, depth_map: np.ndarray, detections) -> Tuple[List[np.ndarray], List[np.ndarray]]:
         """Apply MobileSAM segmentation within bounding boxes and crop both RGB and depth"""
+        self.current_masks = []  # Reset masks for current frame
+        
         if not self.mobile_sam or not sv or len(detections) == 0:
             # Simple crops without segmentation
             rgb_crops, depth_crops = [], []
@@ -211,6 +204,7 @@ class ReIDPipeline:
                     depth_crop = depth_map[y1:y2, x1:x2].copy()
                     rgb_crops.append(rgb_crop)
                     depth_crops.append(depth_crop)
+                    self.current_masks.append(None)
             return rgb_crops, depth_crops
         
         try:
@@ -241,6 +235,7 @@ class ReIDPipeline:
                 
                 # Select best mask
                 best_mask = masks[np.argmax(scores)]
+                self.current_masks.append(best_mask)  # Store full-image mask
                 
                 # Crop RGB with mask
                 rgb_crop = frame[y1:y2, x1:x2].copy()
@@ -272,10 +267,11 @@ class ReIDPipeline:
                     depth_crop = depth_map[y1:y2, x1:x2].copy()
                     rgb_crops.append(rgb_crop)
                     depth_crops.append(depth_crop)
+                    self.current_masks.append(None)
             return rgb_crops, depth_crops
     
     def extract_reid_features(self, rgb_crops: List[np.ndarray], depth_crops: List[np.ndarray]) -> np.ndarray:
-        """Extract re-identification features using RGB and depth crops"""
+        """Extract RGB-D re-identification features using both RGB and depth crops"""
         if len(rgb_crops) == 0:
             return np.array([])
         
@@ -285,16 +281,79 @@ class ReIDPipeline:
                 if rgb_crop.size == 0:
                     continue
                 
-                # Resize to 384x384 for MegaDescriptor
+                # Resize both RGB and depth to 384x384 for MegaDescriptor
+                rgb_resized = cv2.resize(rgb_crop, (384, 384))
+                depth_resized = cv2.resize(depth_crop, (384, 384))
+                rgb_final = cv2.cvtColor(rgb_resized, cv2.COLOR_BGR2RGB)
+                
+                if self.reid_method == "megadescriptor_direct":
+                    # RGB-D Fusion - Process both modalities and combine features
+                    depth_normalized = depth_resized.astype(np.float32) / 255.0
+                    depth_3channel = np.stack([depth_normalized] * 3, axis=-1)  # Convert to 3-channel
+                    
+                    # Create tensors for both modalities
+                    rgb_tensor = torch.from_numpy(rgb_final).permute(2, 0, 1).float() / 255.0
+                    depth_tensor = torch.from_numpy(depth_3channel).permute(2, 0, 1).float()
+                    
+                    rgb_tensor = rgb_tensor.unsqueeze(0).to(self.device)
+                    depth_tensor = depth_tensor.unsqueeze(0).to(self.device)
+                    
+                    # Normalize RGB like ImageNet
+                    rgb_mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(self.device)
+                    rgb_std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(self.device)
+                    rgb_tensor = (rgb_tensor - rgb_mean) / rgb_std
+                    
+                    # Normalize depth differently (depth has different statistics)
+                    depth_mean = torch.tensor([0.5, 0.5, 0.5]).view(1, 3, 1, 1).to(self.device)
+                    depth_std = torch.tensor([0.5, 0.5, 0.5]).view(1, 3, 1, 1).to(self.device)
+                    depth_tensor = (depth_tensor - depth_mean) / depth_std
+                    
+                    with torch.no_grad():
+                        # Extract features from both modalities
+                        rgb_feature = self.reid_model(rgb_tensor)
+                        depth_feature = self.reid_model(depth_tensor)
+                        
+                        # Fusion strategy: Weighted combination
+                        rgb_weight = 0.7  # RGB is more important for visual appearance
+                        depth_weight = 0.3  # Depth provides shape/structure information
+                        
+                        # L2 normalize each feature separately
+                        rgb_feature = F.normalize(rgb_feature, p=2, dim=1)
+                        depth_feature = F.normalize(depth_feature, p=2, dim=1)
+                        
+                        # Weighted fusion
+                        fused_feature = rgb_weight * rgb_feature + depth_weight * depth_feature
+                        
+                        # Final normalization
+                        fused_feature = F.normalize(fused_feature, p=2, dim=1)
+                        
+                        features.append(fused_feature.cpu().numpy())
+            
+            return np.vstack(features) if features else np.array([])
+            
+        except Exception as e:
+            print(f"❌ RGB-D feature extraction failed: {e}")
+            # Fallback to RGB-only processing
+            return self.extract_reid_features_rgb_only(rgb_crops)
+    
+    def extract_reid_features_rgb_only(self, rgb_crops: List[np.ndarray]) -> np.ndarray:
+        """Fallback RGB-only feature extraction"""
+        if len(rgb_crops) == 0:
+            return np.array([])
+        
+        try:
+            features = []
+            for i, rgb_crop in enumerate(rgb_crops):
+                if rgb_crop.size == 0:
+                    continue
+                
                 rgb_resized = cv2.resize(rgb_crop, (384, 384))
                 rgb_final = cv2.cvtColor(rgb_resized, cv2.COLOR_BGR2RGB)
                 
                 if self.reid_method == "megadescriptor_direct":
-                    # Convert to tensor and process directly
                     rgb_tensor = torch.from_numpy(rgb_final).permute(2, 0, 1).float() / 255.0
                     rgb_tensor = rgb_tensor.unsqueeze(0).to(self.device)
                     
-                    # Normalize like ImageNet
                     mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(self.device)
                     std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(self.device)
                     rgb_tensor = (rgb_tensor - mean) / std
@@ -306,25 +365,99 @@ class ReIDPipeline:
             return np.vstack(features) if features else np.array([])
             
         except Exception as e:
-            print(f"❌ Feature extraction failed: {e}")
+            print(f"❌ RGB feature extraction failed: {e}")
             return np.array([])
     
-    def update_track_embeddings(self, track_ids: np.ndarray, features: np.ndarray):
-        """Update embedding history for tracked objects"""
-        if len(track_ids) != len(features):
-            return
+    def extract_depth_shape_features(self, depth_crop: np.ndarray) -> Dict:
+        """Extract geometric shape features from depth for additional matching"""
+        if depth_crop.size == 0:
+            return {}
         
-        for track_id, feature in zip(track_ids, features):
-            if track_id not in self.track_embeddings:
-                self.track_embeddings[track_id] = []
+        try:
+            # Normalize depth
+            depth_norm = depth_crop.astype(np.float32) / 255.0
             
-            self.track_embeddings[track_id].append(feature)
+            # Extract shape statistics
+            depth_stats = {
+                'mean_depth': np.mean(depth_norm),
+                'depth_std': np.std(depth_norm),
+                'depth_range': np.max(depth_norm) - np.min(depth_norm),
+                'depth_median': np.median(depth_norm)
+            }
             
-            if len(self.track_embeddings[track_id]) > self.embedding_history_size:
-                self.track_embeddings[track_id].pop(0)
+            # Extract contour-based shape features
+            depth_binary = (depth_norm > 0.1).astype(np.uint8) * 255
+            contours, _ = cv2.findContours(depth_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if contours:
+                largest_contour = max(contours, key=cv2.contourArea)
+                
+                # Shape descriptors
+                area = cv2.contourArea(largest_contour)
+                perimeter = cv2.arcLength(largest_contour, True)
+                
+                if perimeter > 0:
+                    circularity = 4 * np.pi * area / (perimeter ** 2)
+                else:
+                    circularity = 0
+                    
+                # Bounding box aspect ratio
+                x, y, w, h = cv2.boundingRect(largest_contour)
+                aspect_ratio = w / h if h > 0 else 0
+                
+                depth_stats.update({
+                    'area': area,
+                    'circularity': circularity,
+                    'aspect_ratio': aspect_ratio,
+                    'compactness': area / (w * h) if w * h > 0 else 0
+                })
+            
+            return depth_stats
+            
+        except Exception as e:
+            print(f"❌ Depth shape feature extraction failed: {e}")
+            return {}
     
-    def compute_similarity(self, query_feature: np.ndarray, track_id: int) -> float:
-        """Compute similarity between query feature and track embeddings"""
+    def match_with_depth_consistency(self, query_rgb_feature: np.ndarray, query_depth_stats: Dict, 
+                                    track_id: int, rgb_weight: float = 0.8, depth_weight: float = 0.2) -> float:
+        """Enhanced matching that combines RGB features with depth shape consistency"""
+        
+        # RGB feature similarity
+        rgb_similarity = self.compute_similarity_with_depth_weighting(query_rgb_feature, track_id)
+        
+        # Depth shape consistency
+        depth_similarity = 0.0
+        if track_id in self.track_depth_stats and query_depth_stats:
+            track_depth_history = self.track_depth_stats[track_id]
+            
+            if track_depth_history:
+                # Compare shape statistics
+                depth_similarities = []
+                for historical_stats in track_depth_history:
+                    shape_similarity = 0.0
+                    comparisons = 0
+                    
+                    for key in ['aspect_ratio', 'circularity', 'compactness']:
+                        if key in query_depth_stats and key in historical_stats:
+                            # Normalized difference (smaller difference = higher similarity)
+                            diff = abs(query_depth_stats[key] - historical_stats[key])
+                            max_val = max(query_depth_stats[key], historical_stats[key], 0.01)
+                            shape_similarity += 1.0 - min(1.0, diff / max_val)
+                            comparisons += 1
+                    
+                    if comparisons > 0:
+                        depth_similarities.append(shape_similarity / comparisons)
+                
+                if depth_similarities:
+                    depth_similarity = np.max(depth_similarities)
+        
+        # Combined similarity
+        combined_similarity = rgb_weight * rgb_similarity + depth_weight * depth_similarity
+        
+        return combined_similarity
+    
+    def compute_similarity_with_depth_weighting(self, query_feature: np.ndarray, track_id: int) -> float:
+        """Enhanced similarity computation that considers depth consistency"""
         if track_id not in self.track_embeddings:
             return 0.0
         
@@ -334,13 +467,42 @@ class ReIDPipeline:
         
         similarities = []
         for track_feature in track_features:
-            similarity = np.dot(query_feature, track_feature.T)
+            # Cosine similarity (features are already normalized)
+            similarity = np.dot(query_feature.flatten(), track_feature.flatten())
             similarities.append(similarity)
         
-        return np.mean(similarities)
+        # Use maximum similarity for best match
+        max_similarity = np.max(similarities)
+        
+        # Bonus: If we have multiple consistent matches, boost confidence
+        high_similarity_count = np.sum(np.array(similarities) > 0.4)
+        consistency_bonus = min(0.1, high_similarity_count * 0.02)
+        
+        return max_similarity + consistency_bonus
     
-    def find_best_match(self, query_feature: np.ndarray, threshold: float = 0.7) -> int:
-        """Find best matching track ID for query feature"""
+    def update_track_embeddings_with_depth(self, track_ids: np.ndarray, features: np.ndarray, depth_stats: List[Dict]):
+        """Update embedding and depth statistics history for tracked objects"""
+        if len(track_ids) != len(features) or len(track_ids) != len(depth_stats):
+            return
+        
+        for track_id, feature, depth_stat in zip(track_ids, features, depth_stats):
+            # Update RGB-D embeddings
+            if track_id not in self.track_embeddings:
+                self.track_embeddings[track_id] = []
+            self.track_embeddings[track_id].append(feature)
+            if len(self.track_embeddings[track_id]) > self.embedding_history_size:
+                self.track_embeddings[track_id].pop(0)
+            
+            # Update depth shape statistics
+            if track_id not in self.track_depth_stats:
+                self.track_depth_stats[track_id] = []
+            if depth_stat:  # Only add if we have valid depth statistics
+                self.track_depth_stats[track_id].append(depth_stat)
+                if len(self.track_depth_stats[track_id]) > self.embedding_history_size:
+                    self.track_depth_stats[track_id].pop(0)
+    
+    def find_best_match_with_depth(self, query_feature: np.ndarray, query_depth_stats: Dict, threshold: float = 0.35) -> int:
+        """Find best matching track ID using RGB-D features and depth shape consistency"""
         if len(self.track_embeddings) == 0:
             return -1
         
@@ -348,48 +510,101 @@ class ReIDPipeline:
         best_track_id = -1
         
         for track_id in self.track_embeddings:
-            similarity = self.compute_similarity(query_feature, track_id)
+            # Enhanced similarity that combines RGB-D features with depth shape consistency
+            similarity = self.match_with_depth_consistency(query_feature, query_depth_stats, track_id)
+            
             if similarity > best_similarity and similarity > threshold:
                 best_similarity = similarity
                 best_track_id = track_id
         
+        if best_track_id >= 0:
+            print(f"🔍 RGB-D match: Track {best_track_id} with similarity {best_similarity:.3f}")
+        
         return best_track_id
     
-    def process_frame(self, frame: np.ndarray, detections) -> Tuple[List[np.ndarray], List[np.ndarray], np.ndarray, np.ndarray]:
-        """Complete pipeline processing for a frame"""
+    def process_frame(self, frame: np.ndarray, detections) -> Tuple[List[np.ndarray], List[np.ndarray], np.ndarray, np.ndarray, List[Dict]]:
+        """Complete pipeline processing for a frame with enhanced depth utilization"""
         # Step 1: Estimate depth for entire image
         depth_map = self.estimate_depth_full_image(frame)
         
         # Step 2: Segment and crop both RGB and depth within bounding boxes
         rgb_crops, depth_crops = self.segment_and_crop_with_depth(frame, depth_map, detections)
         
-        # Step 3: Extract re-identification features using RGB+depth crops
-        reid_features = self.extract_reid_features(rgb_crops, depth_crops)
+        # Step 3: Extract RGB-D re-identification features
+        rgbd_features = self.extract_reid_features(rgb_crops, depth_crops)
         
-        return rgb_crops, depth_crops, depth_map, reid_features
+        # Step 4: Extract depth shape statistics for additional matching
+        depth_shape_stats = []
+        for depth_crop in depth_crops:
+            stats = self.extract_depth_shape_features(depth_crop)
+            depth_shape_stats.append(stats)
+        
+        return rgb_crops, depth_crops, depth_map, rgbd_features, depth_shape_stats
     
-    def enhance_tracking(self, detections, reid_features):
-        """Enhance ByteTrack with re-identification features"""
+    def enhance_tracking(self, detections, reid_features, depth_stats=None):
+        """Enhanced tracking with RGB-D re-identification and depth consistency"""
         if not sv or len(detections) == 0 or len(reid_features) == 0:
             return detections
         
-        if hasattr(detections, 'tracker_id'):
-            # Update embeddings for existing tracks
-            valid_tracks = detections.tracker_id != -1
-            if np.any(valid_tracks):
-                valid_track_ids = detections.tracker_id[valid_tracks]
-                valid_features = reid_features[valid_tracks]
-                self.update_track_embeddings(valid_track_ids, valid_features)
-            
-            # Try to re-identify lost tracks
-            lost_tracks = detections.tracker_id == -1
-            if np.any(lost_tracks):
-                lost_features = reid_features[lost_tracks]
-                for i, feature in enumerate(lost_features):
-                    best_match = self.find_best_match(feature)
-                    if best_match != -1:
-                        lost_idx = np.where(lost_tracks)[0][i]
-                        detections.tracker_id[lost_idx] = best_match
-                        print(f"🔄 Re-identified track {best_match}")
+        # Use empty depth stats if not provided
+        if depth_stats is None:
+            depth_stats = [{}] * len(reid_features)
         
-        return detections
+        # Create a copy to modify
+        enhanced_detections = detections
+        
+        if hasattr(detections, 'tracker_id'):
+            original_track_ids = enhanced_detections.tracker_id.copy()
+            
+            # Update embeddings for existing valid tracks
+            valid_tracks = enhanced_detections.tracker_id >= 0
+            if np.any(valid_tracks):
+                valid_track_ids = enhanced_detections.tracker_id[valid_tracks]
+                valid_features = reid_features[valid_tracks]
+                valid_depth_stats = [depth_stats[i] for i in np.where(valid_tracks)[0]]
+                self.update_track_embeddings_with_depth(valid_track_ids, valid_features, valid_depth_stats)
+            
+            # Process lost/unassigned tracks for re-identification
+            lost_tracks = enhanced_detections.tracker_id < 0
+            if np.any(lost_tracks):
+                lost_indices = np.where(lost_tracks)[0]
+                lost_features = reid_features[lost_tracks]
+                lost_depth_stats = [depth_stats[i] for i in lost_indices]
+                
+                for i, (feature, depth_stat) in enumerate(zip(lost_features, lost_depth_stats)):
+                    original_idx = lost_indices[i]
+                    
+                    # Try to find a match using RGB-D features and depth consistency
+                    best_match = self.find_best_match_with_depth(feature, depth_stat, threshold=0.35)
+                    
+                    if best_match >= 0:
+                        # Reassign the track ID
+                        enhanced_detections.tracker_id[original_idx] = best_match
+                        self.reassignment_count += 1
+                        print(f"🔄 RGB-D Re-identified: Detection → Track {best_match} (reassignment #{self.reassignment_count})")
+                        
+                        # Update the track's embeddings with this new feature
+                        if best_match not in self.track_embeddings:
+                            self.track_embeddings[best_match] = []
+                        self.track_embeddings[best_match].append(feature)
+                        
+                        if len(self.track_embeddings[best_match]) > self.embedding_history_size:
+                            self.track_embeddings[best_match].pop(0)
+                        
+                        # Update depth statistics
+                        if depth_stat and best_match not in self.track_depth_stats:
+                            self.track_depth_stats[best_match] = []
+                        if depth_stat:
+                            self.track_depth_stats[best_match].append(depth_stat)
+                            if len(self.track_depth_stats[best_match]) > self.embedding_history_size:
+                                self.track_depth_stats[best_match].pop(0)
+        
+        return enhanced_detections
+    
+    def get_current_masks(self):
+        """Get current frame's segmentation masks for visualization"""
+        return self.current_masks
+    
+    def get_reassignment_count(self):
+        """Get total number of track reassignments performed"""
+        return self.reassignment_count

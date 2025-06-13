@@ -281,7 +281,7 @@ class Visualizer:
                                        human_count: int, horse_count: int, human_poses: int, 
                                        horse_poses: int, stats: dict = None, 
                                        expected_horses: int = 10, expected_jockeys: int = 10):
-        """Draw info overlay with tracking and re-identification statistics"""
+        """Draw info overlay with RGB-D tracking and re-identification statistics"""
         total_display = str(max_frames) if max_frames != float('inf') else "∞"
         
         info_lines = [
@@ -299,14 +299,15 @@ class Visualizer:
             tracked_horses = stats.get('tracked_horses', 0)
             info_lines.append(f"🔄 Unique Tracks - Humans:{tracked_humans} Horses:{tracked_horses}")
         
-        # Add re-identification info
+        # Add RGB-D re-identification info
         if self.config.enable_reid_pipeline:
-            info_lines.append(f"🔍 Re-ID Pipeline: FullImage-Depth → BBox-SAM → MegaDescriptor")
+            info_lines.append(f"🔍 RGB-D Re-ID Pipeline: FullImage-Depth → BBox-SAM → RGB-D-MegaDescriptor")
             reid_reassignments = stats.get('reid_reassignments', 0) if stats else 0
             info_lines.append(f"   Track reassignments: {reid_reassignments} | Threshold: {self.config.reid_similarity_threshold}")
-            info_lines.append(f"   Components: SAM:{self.config.enable_mobile_sam} Depth:{self.config.enable_depth_anything} ReID:{self.config.enable_megadescriptor}")
+            info_lines.append(f"   RGB-D Fusion: RGB(70%) + Depth(30%) + Shape consistency")
+            info_lines.append(f"   Components: Depth-Anything:{self.config.enable_depth_anything} SAM:{self.config.enable_mobile_sam} ReID:{self.config.enable_megadescriptor}")
         else:
-            info_lines.append(f"🔍 Re-ID Pipeline: DISABLED")
+            info_lines.append(f"🔍 RGB-D Re-ID Pipeline: DISABLED")
         
         info_lines.append(f"🎨 Auto Colors: Each track gets unique color from supervision palette")
         info_lines.append(f"SOURCE Filtering: Human:{self.config.confidence_human_pose} Horse-ViTPose:{self.config.confidence_horse_pose_vitpose}")
@@ -316,6 +317,7 @@ class Visualizer:
         
         if self.config.display:
             info_lines.append(f"Controls: SPACE=Pause Q=Quit | Green dots = Re-identified tracks")
+            info_lines.append(f"Visualizations: Top-right=Depth+Masks, Bottom-left=Segmentation only")
         
         # Semi-transparent background
         overlay = frame.copy()
