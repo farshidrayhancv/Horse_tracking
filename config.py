@@ -28,11 +28,21 @@ class Config:
             'none': 'No horse pose estimation'
         }
         
+        # NEW: SAM model selection
+        self.SAM_MODELS = {
+            'mobilesam': 'MobileSAM (lightweight, faster)',
+            'sam2': 'SAM2 (Meta\'s latest, more accurate)',
+            'none': 'No segmentation (simple crops only)'
+        }
+        
         # Default configuration
         self.human_detector = 'rtdetr'
         self.horse_detector = 'both'
         self.human_pose_estimator = 'vitpose'
         self.horse_pose_estimator = 'dual'
+        
+        # NEW: Default SAM model
+        self.sam_model = 'sam2'  # Default to SAM2 for better accuracy
 
         
         # Separate confidence thresholds for each model/task
@@ -53,7 +63,7 @@ class Config:
         self.enable_reid_pipeline = False
         self.reid_similarity_threshold = 0.7
         self.reid_embedding_history_size = 5
-        self.enable_mobile_sam = True
+        self.enable_mobile_sam = True  # Keep for backward compatibility
         self.enable_depth_anything = True
         self.enable_megadescriptor = True
         
@@ -113,6 +123,13 @@ class Config:
         else:
             print(f"❌ Invalid horse pose estimator. Available: {list(self.HORSE_POSE_ESTIMATORS.keys())}")
     
+    def set_sam_model(self, model: str):
+        if model in self.SAM_MODELS:
+            self.sam_model = model
+            print(f"✅ SAM model: {self.SAM_MODELS[model]}")
+        else:
+            print(f"❌ Invalid SAM model. Available: {list(self.SAM_MODELS.keys())}")
+    
     def set_confidence_threshold(self, threshold: float):
         self.confidence_human_detection = threshold
         self.confidence_horse_detection = threshold
@@ -126,6 +143,7 @@ class Config:
         print(f"   Horse detector: {self.HORSE_DETECTORS[self.horse_detector]}")
         print(f"   Human pose: {self.HUMAN_POSE_ESTIMATORS[self.human_pose_estimator]}")
         print(f"   Horse pose: {self.HORSE_POSE_ESTIMATORS[self.horse_pose_estimator]}")
+        print(f"   SAM model: {self.SAM_MODELS[self.sam_model]}")
         print(f"   Confidence - Human detection: {self.confidence_human_detection}")
         print(f"   Confidence - Horse detection: {self.confidence_horse_detection}")
         print(f"   Confidence - Human pose: {self.confidence_human_pose}")

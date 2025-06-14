@@ -33,6 +33,7 @@ dependencies:
     # Advanced models and utilities
     - git+https://github.com/ChaoningZhang/MobileSAM.git
     - git+https://github.com/LiheYoung/Depth-Anything.git
+    - git+https://github.com/facebookresearch/segment-anything-2.git # 1.1.0
     
     # Core dependencies used in code
     - requests

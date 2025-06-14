@@ -18,6 +18,12 @@ except ImportError:
     MOBILESAM_AVAILABLE = False
 
 try:
+    from sam2.sam2_image_predictor import SAM2ImagePredictor
+    SAM2_AVAILABLE = True
+except ImportError:
+    SAM2_AVAILABLE = False
+
+try:
     from transformers import pipeline
     DEPTH_ANYTHING_AVAILABLE = True
 except ImportError:
@@ -32,14 +38,15 @@ except ImportError:
 
 
 class ReIDPipeline:
-    """Complete RGB-D re-identification pipeline: Detection → Depth (full image) → MobileSAM (bbox) → RGB-D MegaDescriptor"""
+    """Complete RGB-D re-identification pipeline: Detection → Depth (full image) → SAM (bbox) → RGB-D MegaDescriptor"""
     
     def __init__(self, config):
         self.config = config
         self.device = config.device
         
         # Initialize components
-        self.mobile_sam = None
+        self.sam_predictor = None
+        self.sam_model_type = None
         self.depth_pipeline = None
         self.reid_model = None
         self.reid_method = None
@@ -53,14 +60,28 @@ class ReIDPipeline:
         # Store current frame's segmentation masks for visualization
         self.current_masks = []
         
-        self.setup_mobile_sam()
+        self.setup_sam_model()
         self.setup_depth_anything()
         self.setup_megadescriptor()
         
+    def setup_sam_model(self):
+        """Initialize SAM model (MobileSAM or SAM2) based on config"""
+        if self.config.sam_model == 'none':
+            print("🚫 SAM segmentation disabled - using simple crops only")
+            return
+        
+        if self.config.sam_model == 'mobilesam':
+            self.setup_mobile_sam()
+        elif self.config.sam_model == 'sam2':
+            self.setup_sam2()
+        else:
+            print(f"❌ Unknown SAM model: {self.config.sam_model}")
+            print(f"Available options: {list(self.config.SAM_MODELS.keys())}")
+    
     def setup_mobile_sam(self):
         """Initialize MobileSAM for segmentation"""
         if not MOBILESAM_AVAILABLE:
-            print("❌ MobileSAM not available")
+            print("❌ MobileSAM not available - install with: pip install git+https://github.com/ChaoningZhang/MobileSAM.git")
             return
             
         try:
@@ -89,10 +110,28 @@ class ReIDPipeline:
             sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
             sam.to(device=self.device)
             sam.eval()
-            self.mobile_sam = SamPredictor(sam)
+            self.sam_predictor = SamPredictor(sam)
+            self.sam_model_type = 'mobilesam'
             print("✅ MobileSAM loaded")
         except Exception as e:
             print(f"❌ MobileSAM setup failed: {e}")
+    
+    def setup_sam2(self):
+        """Initialize SAM2 for segmentation"""
+        if not SAM2_AVAILABLE:
+            print("❌ SAM2 not available - install with: pip install git+https://github.com/facebookresearch/segment-anything-2.git")
+            return
+            
+        try:
+            print("🔄 Loading SAM2 model...")
+            # Use the base model for a good balance between speed and accuracy
+            self.sam_predictor = SAM2ImagePredictor.from_pretrained("facebook/sam2.1-hiera-base-plus")
+            self.sam_model_type = 'sam2'
+            print("✅ SAM2 loaded (facebook/sam2.1-hiera-base-plus)")
+        except Exception as e:
+            print(f"❌ SAM2 setup failed: {e}")
+            print("Falling back to MobileSAM...")
+            self.setup_mobile_sam()
     
     def setup_depth_anything(self):
         """Initialize Depth Anything using HuggingFace pipeline"""
@@ -189,10 +228,10 @@ class ReIDPipeline:
             return np.zeros_like(frame[:,:,0])
     
     def segment_and_crop_with_depth(self, frame: np.ndarray, depth_map: np.ndarray, detections) -> Tuple[List[np.ndarray], List[np.ndarray]]:
-        """Apply MobileSAM segmentation within bounding boxes and crop both RGB and depth"""
+        """Apply SAM segmentation within bounding boxes and crop both RGB and depth"""
         self.current_masks = []  # Reset masks for current frame
         
-        if not self.mobile_sam or not sv or len(detections) == 0:
+        if not self.sam_predictor or not sv or len(detections) == 0:
             # Simple crops without segmentation
             rgb_crops, depth_crops = [], []
             for box in detections.xyxy:
@@ -209,7 +248,7 @@ class ReIDPipeline:
         
         try:
             # Set image for SAM
-            self.mobile_sam.set_image(frame)
+            self.sam_predictor.set_image(frame)
             
             rgb_crops, depth_crops = [], []
             for box in detections.xyxy:
@@ -226,38 +265,50 @@ class ReIDPipeline:
                 input_point = np.array([[center_x, center_y]])
                 input_label = np.array([1])  # Positive prompt - this is our subject
                 
-                # Generate mask
-                masks, scores, logits = self.mobile_sam.predict(
-                    point_coords=input_point,
-                    point_labels=input_label,
-                    multimask_output=True,
-                )
+                # Generate mask with model-specific inference
+                if self.sam_model_type == 'sam2':
+                    # SAM2 requires torch inference mode and autocast
+                    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+                        masks, scores, logits = self.sam_predictor.predict(
+                            point_coords=input_point,
+                            point_labels=input_label,
+                            multimask_output=True,
+                        )
+                else:
+                    # MobileSAM standard inference
+                    masks, scores, logits = self.sam_predictor.predict(
+                        point_coords=input_point,
+                        point_labels=input_label,
+                        multimask_output=True,
+                    )
                 
-                # Select best mask
+                # Select best mask and ensure proper data type
                 best_mask = masks[np.argmax(scores)]
+                
+                # Convert mask to boolean type if needed (SAM2 compatibility)
+                if best_mask.dtype != bool:
+                    best_mask = best_mask.astype(bool)
+                
+                # Ensure mask is 2D
+                if best_mask.ndim > 2:
+                    best_mask = best_mask.squeeze()
+                
                 self.current_masks.append(best_mask)  # Store full-image mask
                 
                 # Crop RGB with mask
                 rgb_crop = frame[y1:y2, x1:x2].copy()
                 mask_crop = best_mask[y1:y2, x1:x2]
                 
-                if mask_crop.shape == rgb_crop.shape[:2]:
-                    rgb_crop[~mask_crop] = 0  # Set background to black
+                # Ensure mask_crop is boolean
                 
-                # Crop depth with same mask
-                depth_crop = depth_map[y1:y2, x1:x2].copy()
-                if mask_crop.shape == depth_crop.shape:
-                    depth_crop[~mask_crop] = 0  # Set background to black
-                
-                rgb_crops.append(rgb_crop)
-                depth_crops.append(depth_crop)
-            
             return rgb_crops, depth_crops
             
         except Exception as e:
             print(f"❌ SAM segmentation failed: {e}")
+            print(f"   Falling back to simple crops without segmentation")
             # Fallback to simple crops
             rgb_crops, depth_crops = [], []
+            self.current_masks = []  # Clear masks on fallback
             for box in detections.xyxy:
                 x1, y1, x2, y2 = box.astype(int)
                 x1, y1 = max(0, x1), max(0, y1)
@@ -518,7 +569,8 @@ class ReIDPipeline:
                 best_track_id = track_id
         
         if best_track_id >= 0:
-            print(f"🔍 RGB-D match: Track {best_track_id} with similarity {best_similarity:.3f}")
+            model_name = "SAM2" if self.sam_model_type == 'sam2' else "MobileSAM"
+            print(f"🔍 RGB-D+{model_name} match: Track {best_track_id} with similarity {best_similarity:.3f}")
         
         return best_track_id
     
@@ -581,7 +633,8 @@ class ReIDPipeline:
                         # Reassign the track ID
                         enhanced_detections.tracker_id[original_idx] = best_match
                         self.reassignment_count += 1
-                        print(f"🔄 RGB-D Re-identified: Detection → Track {best_match} (reassignment #{self.reassignment_count})")
+                        model_name = "SAM2" if self.sam_model_type == 'sam2' else "MobileSAM"
+                        print(f"🔄 RGB-D+{model_name} Re-identified: Detection → Track {best_match} (reassignment #{self.reassignment_count})")
                         
                         # Update the track's embeddings with this new feature
                         if best_match not in self.track_embeddings:
