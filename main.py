@@ -1,3 +1,8 @@
+"""
+Enhanced main.py with SAMURAI integration
+FIXED VERSION - Replace your existing main.py with this
+"""
+
 import cv2
 import numpy as np
 import torch
@@ -11,7 +16,7 @@ from models import SuperAnimalQuadruped
 from detectors import DetectionManager
 from pose_estimators import PoseEstimationManager
 from visualizers import Visualizer
-from reid_pipeline import ReIDPipeline
+from reid_pipeline import ReIDPipeline  # This now has SAMURAI features
 
 # Suppress warnings but keep errors and status prints
 warnings.filterwarnings("ignore")
@@ -27,7 +32,7 @@ except ImportError:
 try:
     from transformers import AutoProcessor, VitPoseForPoseEstimation, RTDetrForObjectDetection
     VITPOSE_AVAILABLE = True
-    print("✓ Official ViTPose (HuggingFace Transformers) available")
+    print("✓ ViTPose available")
 except ImportError:
     VITPOSE_AVAILABLE = False
     print("⚠️ ViTPose not available - install with: pip install transformers torch")
@@ -35,7 +40,7 @@ except ImportError:
 try:
     from dlclibrary import download_huggingface_model
     SUPERANIMAL_AVAILABLE = True
-    print("✓ Official DLClibrary + SuperAnimal available")
+    print("✓ SuperAnimal available")
 except ImportError:
     SUPERANIMAL_AVAILABLE = False
     print("⚠️ DLClibrary not available - install with: pip install dlclibrary")
@@ -43,10 +48,11 @@ except ImportError:
 try:
     import supervision as sv
     from supervision import ByteTrack
-    print("✓ Supervision 0.25.1 with ByteTrack for professional tracking")
+    print("✓ Supervision available")
 except ImportError:
     print("❌ Supervision not available - install with: pip install supervision")
     sv = None
+
 
 class HybridPoseSystem:
     def __init__(self, video_path: str, config: Config):
@@ -76,12 +82,12 @@ class HybridPoseSystem:
         # Setup models and components
         self.setup_models()
         
-        # Setup re-identification pipeline
+        # Setup enhanced re-identification pipeline with SAMURAI
         self.reid_pipeline = None
-        if self.config.enable_reid_pipeline:
+        if getattr(self.config, 'enable_reid_pipeline', True):
             try:
                 self.reid_pipeline = ReIDPipeline(self.config)
-                print("✅ Re-identification pipeline initialized")
+                print("✅ SAMURAI pipeline initialized")
             except Exception as e:
                 print(f"❌ Re-identification pipeline failed to initialize: {e}")
                 print("🔄 Continuing without re-identification")
@@ -90,7 +96,7 @@ class HybridPoseSystem:
         # Print configuration
         self.config.print_config()
         print(f"🎯 Expected: {self.expected_horses} horses, {self.expected_jockeys} jockeys")
-        print(f"🐴🏇 Configurable Pose System with RGB-D Re-ID ready: {self.total_frames} frames @ {self.fps} FPS")
+        print(f"🐴🏇 Enhanced Pose System with SAMURAI ready: {self.total_frames} frames @ {self.fps} FPS")
     
     def parse_filename_counts(self):
         """Parse filename to extract expected horse/jockey counts"""
@@ -115,16 +121,30 @@ class HybridPoseSystem:
             return
         
         # Initialize trackers with video FPS
-        self.horse_tracker = ByteTrack(frame_rate=int(self.fps))
-        self.human_tracker = ByteTrack(frame_rate=int(self.fps))
+        self.horse_tracker = ByteTrack(
+            frame_rate=int(self.fps),
+            track_activation_threshold=0.5,      # Lower threshold for track continuation  
+            lost_track_buffer=25,       # Keep tracks longer (2.4 seconds @ 25fps)
+            minimum_matching_threshold=0.5,      # Higher threshold for matching
+            minimum_consecutive_frames=5,
+        )
+
+        self.human_tracker = ByteTrack(
+            frame_rate=int(self.fps),
+            track_activation_threshold=0.5,      # Lower threshold for track continuation  
+            lost_track_buffer=15,       # Keep tracks longer (2.4 seconds @ 25fps)
+            minimum_matching_threshold=0.5,      # Higher threshold for matching
+            minimum_consecutive_frames=5,
+        )
+
         
         print(f"✅ ByteTracks initialized @ {self.fps} FPS")
     
     def setup_models(self):
-        # Setup SuperAnimal model if needed - 🔥 PASS CONFIG
+        # Setup SuperAnimal model if needed
         self.superanimal = None
         if self.config.horse_detector in ['superanimal', 'both'] or self.config.horse_pose_estimator in ['superanimal', 'dual']:
-            self.superanimal = SuperAnimalQuadruped(device=self.config.device, config=self.config)  # 🔥 Pass config
+            self.superanimal = SuperAnimalQuadruped(device=self.config.device, config=self.config)
         
         # Setup detection manager
         self.detection_manager = DetectionManager(self.config, self.superanimal)
@@ -155,17 +175,31 @@ class HybridPoseSystem:
         
         return limited_detections
     
+    def visualize_motion_predictions(self, frame, tracking_info):
+        """Visualize SAMURAI motion predictions"""
+        if not tracking_info:
+            return frame
+        
+        motion_predictions = tracking_info.get('motion_predictions', {})
+        for track_id, predicted_pos in motion_predictions.items():
+            if predicted_pos is not None:
+                center = (int(predicted_pos[0]), int(predicted_pos[1]))
+                # Draw predicted position as yellow cross
+                cv2.drawMarker(frame, center, (0, 255, 255), cv2.MARKER_CROSS, 15, 2)
+                cv2.putText(frame, f"P{track_id}", (center[0]+10, center[1]), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+        
+        return frame
+    
     def visualize_segmentation_masks(self, segmentation_masks, tracked_horses, frame_shape):
         """Create visualization showing only segmentation masks on blank background"""
         # Create blank canvas (black background)
         mask_canvas = np.zeros((frame_shape[0], frame_shape[1], 3), dtype=np.uint8)
         
         if segmentation_masks and len(segmentation_masks) > 0:
-            
             # Draw each horse mask with unique colors
             for i, mask in enumerate(segmentation_masks):
                 if mask is not None:
-                    
                     # Get track-based color - ensure we have a valid color
                     if sv and len(tracked_horses) > 0 and i < len(tracked_horses.xyxy):
                         track_id = tracked_horses.tracker_id[i] if hasattr(tracked_horses, 'tracker_id') and i < len(tracked_horses.tracker_id) else i
@@ -182,9 +216,6 @@ class HybridPoseSystem:
                     mask_area = mask.astype(np.uint8) * 255
                     contours, _ = cv2.findContours(mask_area, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                     cv2.drawContours(mask_canvas, contours, -1, (255, 255, 255), 2)
-        else:
-            # print("Debug: No segmentation masks to display")
-            pass
         
         return mask_canvas
 
@@ -236,7 +267,7 @@ class HybridPoseSystem:
         else:
             # Create safe output filename
             input_stem = self.video_path.stem if self.video_path.suffix else self.video_path.name
-            output_path = str(self.video_path.parent / f"{input_stem}_rgb_d_reid_tracked_output.mp4")
+            output_path = str(self.video_path.parent / f"{input_stem}_samurai_output.mp4")
         
         print(f"🎬 Processing: {self.video_path}")
         print(f"📤 Output: {output_path}")
@@ -260,14 +291,14 @@ class HybridPoseSystem:
         
         # Initialize progress bar (only if not displaying)
         if TQDM_AVAILABLE and not self.config.display and self.total_frames != float('inf'):
-            pbar = tqdm(total=max_frames, desc="Processing with RGB-D Re-ID pipeline", 
+            pbar = tqdm(total=max_frames, desc="Processing with SAMURAI-Enhanced tracking", 
                        bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}')
         else:
             pbar = None
         
         # Setup display window
         if self.config.display:
-            window_name = "Horse Racing System with RGB-D Re-Identification"
+            window_name = "SAMURAI-Enhanced Horse Racing System"
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
             display_width = min(1200, self.width)
             display_height = int(self.height * (display_width / self.width))
@@ -278,15 +309,15 @@ class HybridPoseSystem:
             if not ret:
                 break
             
-            # 🔥 STEP 1: Detect objects based on config
+            # STEP 1: Detect objects based on config
             human_detections = self.detection_manager.detect_humans(frame)
             horse_detections = self.detection_manager.detect_horses(frame)
             
-            # 🔥 STEP 2: Limit detections to expected counts
+            # STEP 2: Limit detections to expected counts
             human_detections = self.limit_detections(human_detections, self.expected_jockeys, "jockeys")
             horse_detections = self.limit_detections(horse_detections, self.expected_horses, "horses")
             
-            # 🔥 STEP 3: Track detections
+            # STEP 3: Track detections
             if sv and self.horse_tracker and self.human_tracker:
                 tracked_horses = self.horse_tracker.update_with_detections(horse_detections)
                 tracked_humans = self.human_tracker.update_with_detections(human_detections)
@@ -306,18 +337,19 @@ class HybridPoseSystem:
             else:
                 jockey_detections = tracked_humans
             
-            # 🔥 STEP 4: Apply Enhanced RGB-D Re-identification Pipeline
-            depth_map = None
-            if self.reid_pipeline and self.config.enable_reid_pipeline:
-                # Process horses with RGB-D re-identification
+            # STEP 4: Apply Enhanced SAMURAI Re-identification Pipeline
+            tracking_info = {}
+            if self.reid_pipeline and getattr(self.config, 'enable_reid_pipeline', False):
+                # Process horses with SAMURAI enhancement
                 horse_rgb_crops, horse_depth_crops, depth_map, horse_reid_features, horse_depth_stats = self.reid_pipeline.process_frame(frame, tracked_horses)
                 tracked_horses_enhanced = self.reid_pipeline.enhance_tracking(tracked_horses, horse_reid_features, horse_depth_stats)
                 
-                # Process jockeys with RGB-D re-identification  
+                # Process jockeys with standard RGB-D re-identification  
                 jockey_rgb_crops, jockey_depth_crops, _, jockey_reid_features, jockey_depth_stats = self.reid_pipeline.process_frame(frame, jockey_detections)
                 jockey_detections_enhanced = self.reid_pipeline.enhance_tracking(jockey_detections, jockey_reid_features, jockey_depth_stats)
                 
-                # Get current reassignment count
+                # Get current tracking information
+                tracking_info = self.reid_pipeline.get_tracking_info()
                 stats['reid_reassignments'] = self.reid_pipeline.get_reassignment_count()
                 
                 # Update detections with enhanced tracking
@@ -329,11 +361,11 @@ class HybridPoseSystem:
             stats['tracked_horses'] = len(stats['active_horse_tracks'])
             stats['tracked_humans'] = len(stats['active_human_tracks'])
             
-            # 🔥 STEP 5: Estimate poses based on config
+            # STEP 5: Estimate poses based on config
             human_poses = self.pose_manager.estimate_human_poses(frame, jockey_detections)
             horse_poses = self.pose_manager.estimate_horse_poses(frame, tracked_horses)
             
-            # 🔥 STEP 6: Associate poses with track IDs
+            # STEP 6: Associate poses with track IDs
             human_poses = self.associate_poses_with_tracks(human_poses, jockey_detections)
             horse_poses = self.associate_poses_with_tracks(horse_poses, tracked_horses)
             
@@ -347,7 +379,7 @@ class HybridPoseSystem:
                 stats['superanimal_wins'] += superanimal_count
                 stats['vitpose_wins'] += vitpose_count
             
-            # 🔥 STEP 7: Visualize everything with tracking and RGB-D re-ID
+            # STEP 7: Visualize everything with SAMURAI-enhanced tracking
             frame = self.visualizer.annotate_detections_with_tracking(frame, jockey_detections, tracked_horses)
             
             # Draw poses with track IDs
@@ -360,31 +392,37 @@ class HybridPoseSystem:
             # Add pose method labels
             frame = self.visualizer.draw_pose_labels(frame, horse_poses)
             
+            # STEP 8: Add SAMURAI motion prediction visualizations
+            frame = self.visualize_motion_predictions(frame, tracking_info)
+            
             # Add enhanced depth and segmentation visualization
-            if self.reid_pipeline and self.config.enable_reid_pipeline and depth_map is not None:
+            if self.reid_pipeline and getattr(self.config, 'enable_reid_pipeline', False):
                 # Get segmentation masks for visualization
                 segmentation_masks = self.reid_pipeline.get_current_masks()
+                depth_map = getattr(self.reid_pipeline, '_last_depth_map', None)
                 
-                # Create depth visualization with highlighted horse masks (top right)
-                depth_with_masks = self.visualize_depth_with_masks(depth_map, segmentation_masks, tracked_horses)
-                depth_display = cv2.resize(depth_with_masks, (300, 200))
-                frame[10:210, self.width-310:self.width-10] = depth_display
-                cv2.putText(frame, "Depth + Horse Masks", (self.width-300, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
-                cv2.putText(frame, f"Reassign: {stats['reid_reassignments']}", (self.width-300, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255,255,255), 1)
-                
-                # Create segmentation masks only visualization (bottom left)
-                masks_only = self.visualize_segmentation_masks(segmentation_masks, tracked_horses, frame.shape)
-                masks_display = cv2.resize(masks_only, (300, 200))
-                frame[self.height-210:self.height-10, 10:310] = masks_display
-                cv2.putText(frame, "Segmentation Masks", (20, self.height-220), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+                if depth_map is not None:
+                    # Create depth visualization with highlighted horse masks (top right)
+                    depth_with_masks = self.visualize_depth_with_masks(depth_map, segmentation_masks, tracked_horses)
+                    depth_display = cv2.resize(depth_with_masks, (300, 200))
+                    frame[10:210, self.width-310:self.width-10] = depth_display
+                    cv2.putText(frame, "SAMURAI Depth + Masks", (self.width-300, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+                    cv2.putText(frame, f"Reassign: {stats['reid_reassignments']}", (self.width-300, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255,255,255), 1)
+                    
+                    # Create segmentation masks only visualization (bottom left)
+                    masks_only = self.visualize_segmentation_masks(segmentation_masks, tracked_horses, frame.shape)
+                    masks_display = cv2.resize(masks_only, (300, 200))
+                    frame[self.height-210:self.height-10, 10:310] = masks_display
+                    cv2.putText(frame, "Motion-guided Masks", (20, self.height-220), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
             
-            # Add info overlay with tracking and RGB-D re-ID stats
+            # Add info overlay with SAMURAI tracking stats
             human_count = len(jockey_detections) if sv else len(jockey_detections)
             horse_count = len(tracked_horses) if sv else len(tracked_horses)
             
-            frame = self.visualizer.draw_info_overlay_with_tracking(
+            frame = self.draw_enhanced_info_overlay(
                 frame, frame_count, max_frames, human_count, horse_count,
-                len(human_poses), len(horse_poses), stats, self.expected_horses, self.expected_jockeys
+                len(human_poses), len(horse_poses), stats, tracking_info,
+                self.expected_horses, self.expected_jockeys
             )
             
             # Write frame to output video
@@ -410,8 +448,9 @@ class HybridPoseSystem:
             
             # Update progress bar (only if available)
             if pbar:
-                reid_status = f"RGB-D:ON({stats['reid_reassignments']})" if self.config.enable_reid_pipeline else "Re-ID:OFF"
-                pbar.set_postfix_str(f"H:{human_count}/{self.expected_jockeys} Ho:{horse_count}/{self.expected_horses} T:H{stats['tracked_humans']}+Ho{stats['tracked_horses']} {reid_status}")
+                samurai_status = f"SAMURAI:{tracking_info.get('active_tracks', 0)}T" if tracking_info else "SAMURAI:OFF"
+                reid_status = f"ReID:{stats['reid_reassignments']}" if getattr(self.config, 'enable_reid_pipeline', False) else "ReID:OFF"
+                pbar.set_postfix_str(f"H:{human_count}/{self.expected_jockeys} Ho:{horse_count}/{self.expected_horses} {samurai_status} {reid_status}")
                 pbar.update(1)
         
         self.cap.release()
@@ -423,7 +462,7 @@ class HybridPoseSystem:
         if pbar:
             pbar.close()
         
-        print(f"✅ Processing complete!")
+        print(f"✅ SAMURAI-Enhanced processing complete!")
         print(f"📊 Final Stats:")
         print(f"   Expected: {self.expected_horses} horses, {self.expected_jockeys} jockeys")
         print(f"   Humans detected: {stats['humans_detected']}")
@@ -432,11 +471,16 @@ class HybridPoseSystem:
         print(f"   Horse poses: {stats['horse_poses']}")
         print(f"   🔄 Unique tracks: {stats['tracked_humans']} humans, {stats['tracked_horses']} horses")
         
-        if self.config.enable_reid_pipeline:
-            print(f"🔍 RGB-D Re-identification enabled:")
-            print(f"   - Track reassignments: {stats['reid_reassignments']}")
-            print(f"   - Features: RGB (70%) + Depth shape (30%)")
-            print(f"   - Components: Depth-Anything → MobileSAM → MegaDescriptor")
+        if getattr(self.config, 'enable_reid_pipeline', False):
+            print(f"🎯 SAMURAI-Enhanced Tracking:")
+            if tracking_info:
+                print(f"   - Active tracks: {tracking_info.get('active_tracks', 0)}")
+                print(f"   - Track reassignments: {stats['reid_reassignments']}")
+                print(f"   - Motion-aware memory: ✅")
+                sam_model = getattr(self.config, 'sam_model', 'none')
+                print(f"   - SAM segmentation: {sam_model.upper()}")
+                print(f"   - RGB-D features: ✅")
+            print(f"   - Features: Motion prediction + Visual memory + RGB-D fusion")
         
         if self.config.horse_pose_estimator == 'dual':
             print(f"🥊 Competition Results:")
@@ -446,6 +490,63 @@ class HybridPoseSystem:
         print(f"🎯 Output: {output_path}")
         
         return output_path
+    
+    def draw_enhanced_info_overlay(self, frame: np.ndarray, frame_count: int, max_frames: int, 
+                                 human_count: int, horse_count: int, human_poses: int, 
+                                 horse_poses: int, stats: dict = None, tracking_info: dict = None,
+                                 expected_horses: int = 10, expected_jockeys: int = 10):
+        """Draw enhanced info overlay with SAMURAI statistics"""
+        total_display = str(max_frames) if max_frames != float('inf') else "∞"
+        
+        info_lines = [
+            f"Frame: {frame_count+1}/{total_display}",
+            f"Expected: {expected_horses} horses, {expected_jockeys} jockeys",
+            f"Config: H-Det:{self.config.human_detector} H-Pose:{self.config.human_pose_estimator}",
+            f"        Horse-Det:{self.config.horse_detector} Horse-Pose:{self.config.horse_pose_estimator}",
+            f"Detected - Jockeys:{human_count}/{expected_jockeys} Horses:{horse_count}/{expected_horses}",
+            f"Poses - Humans:{human_poses} Horses:{horse_poses}",
+        ]
+        
+        # Add tracking statistics
+        if stats:
+            tracked_humans = stats.get('tracked_humans', 0)
+            tracked_horses = stats.get('tracked_horses', 0)
+            info_lines.append(f"🔄 Unique Tracks - Humans:{tracked_humans} Horses:{tracked_horses}")
+        
+        # Add SAMURAI tracking info
+        if getattr(self.config, 'enable_reid_pipeline', False) and tracking_info:
+            sam_model_display = getattr(self.config, 'sam_model', 'none').upper()
+            info_lines.append(f"🎯 SAMURAI: Motion-aware {sam_model_display} tracking enabled")
+            
+            active_tracks = tracking_info.get('active_tracks', 0)
+            lost_tracks = tracking_info.get('lost_tracks', 0)
+            reid_reassignments = stats.get('reid_reassignments', 0) if stats else 0
+            
+            info_lines.append(f"   Active:{active_tracks} Lost:{lost_tracks} ReID:{reid_reassignments} | Motion prediction enabled")
+            info_lines.append(f"   Features: Motion + Visual memory + RGB-D fusion")
+        else:
+            info_lines.append(f"🎯 SAMURAI Tracking: DISABLED")
+        
+        info_lines.append(f"🎨 Yellow crosses = motion predictions | Consistent track colors")
+        
+        if self.config.horse_pose_estimator == 'dual' and stats:
+            info_lines.append(f"Competition - SuperAnimal:{stats.get('superanimal_wins', 0)} ViTPose:{stats.get('vitpose_wins', 0)}")
+        
+        if self.config.display:
+            info_lines.append(f"Controls: SPACE=Pause Q=Quit | Enhanced visualizations in corners")
+        
+        # Semi-transparent background
+        overlay = frame.copy()
+        overlay_height = 25 + len(info_lines) * 18
+        cv2.rectangle(overlay, (5, 5), (1000, overlay_height), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+        
+        for i, line in enumerate(info_lines):
+            y_pos = 25 + i * 18
+            cv2.putText(frame, line, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        return frame
+
 
 def main():
     import sys
@@ -457,9 +558,6 @@ def main():
     # Load config from file
     config_file = sys.argv[1]
     config = Config(config_file)
-    
-    # Debug: print what was loaded
-    print(f"Debug: video_path = {getattr(config, 'video_path', 'NOT FOUND')}")
     
     # Get video path from config
     video_path = getattr(config, 'video_path', None)
@@ -483,6 +581,9 @@ def main():
         system.process_video()
     except Exception as e:
         print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
 
 if __name__ == "__main__":
     main()

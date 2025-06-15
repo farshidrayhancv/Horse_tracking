@@ -1,75 +1,56 @@
-# Video file path (required) - filename format: horse_XX.mp4 where XX = number of horses
-video_path: inputs/horse_11.mp4  # Will automatically detect 22 horses + 22 jockeys
+# Clean config.yaml (removed duplicates from your version)
 
-# Output settings
-output_path: null  # Auto-generate if null (will include "_rgb_d_reid_tracked_" in filename)
+# Video and output settings
+video_path: inputs/horse_11.mp4
+output_path: null
 display: false
 
 # Model selection
 human_detector: rtdetr
-horse_detector: rtdetr  # Options: rtdetr, superanimal (NOT RECOMMENDED VERY SLOW), both
+horse_detector: rtdetr
 human_pose_estimator: vitpose
-horse_pose_estimator: superanimal # Options: superanimal (better), vitpose, dual
+horse_pose_estimator: superanimal
 
-# NEW: SAM model selection
-sam_model: sam2  # Options: sam2 (latest Meta model, more accurate), mobilesam (faster), none (no segmentation)
+# SAM model for SAMURAI tracking
+sam_model: sam2
 
-# Separate confidence thresholds for each model
+# Confidence thresholds
 confidence_human_detection: 0.5
 confidence_horse_detection: 0.5
 confidence_human_pose: 0.5
 confidence_horse_pose_superanimal: 0.5
 confidence_horse_pose_vitpose: 0.5
 
-# Tracking and jockey detection settings
+# Basic settings
 jockey_overlap_threshold: 0.4
-
-# Processing settings
 max_frames: null
 device: cuda
 
-# Enhanced RGB-D Re-identification Pipeline Settings
+# SAMURAI TRACKING SETTINGS
 enable_reid_pipeline: true
-reid_similarity_threshold: 0.3  # Threshold for RGB-D feature matching
-reid_embedding_history_size: 10  # Number of embeddings to store per track
-enable_mobile_sam: true          # Keep for backward compatibility (now controlled by sam_model)
-enable_depth_anything: true      # Enable Depth-Anything for depth estimation
-enable_megadescriptor: true      # Enable MegaDescriptor for feature extraction
+samurai_motion_weight: 0.5
+samurai_memory_size: 22
+samurai_similarity_threshold: 0.15
+samurai_max_lost_frames: 25
 
-# RGB-D Fusion Settings (Advanced)
-rgb_weight: 0.5                  # Weight for RGB features (0.0-1.0)
-depth_weight: 0.5                # Weight for depth shape features (0.0-1.0)
-depth_shape_consistency: true    # Enable depth shape consistency checking
-consistency_bonus_threshold: 0.4 # Threshold for consistency bonus
+# ReID and feature settings
+reid_similarity_threshold: 0.3
+reid_embedding_history_size: 15
+enable_depth_anything: true
+enable_megadescriptor: true
 
-# NOTE: Expected horse/jockey counts are automatically parsed from filename
-# Examples:
-#   horse_11.mp4 -> 11 horses, 11 jockeys
-#   horse_22.mp4 -> 22 horses, 22 jockeys
-#   horse_8.mp4  -> 8 horses, 8 jockeys
+# Motion and distance settings
+motion_distance_threshold: 200
+acceleration_prediction: true
+visual_memory_enabled: true
 
-# SAM Model Comparison:
-# - sam2: Meta's latest SAM model with improved accuracy and robustness
-#   * More accurate segmentation, especially for challenging cases
-#   * Better handles occlusions and complex backgrounds
-#   * Requires more GPU memory and slightly slower
-#   * Recommended for best quality results
-#
-# - mobilesam: Lightweight version optimized for speed
-#   * Faster inference, lower memory usage
-#   * Good for real-time applications or limited resources
-#   * Slightly less accurate than SAM2
-#
-# - none: Disables segmentation entirely
-#   * Uses simple bounding box crops only
-#   * Fastest option but without precise object boundaries
-#   * Good for testing or when segmentation is not critical
+# Track management
+max_tracks_per_frame: 15
+track_consolidation_enabled: true
+consolidation_similarity_threshold: 0.7
 
-# RGB-D Re-ID Pipeline Overview:
-# 1. Depth-Anything estimates full-image depth map
-# 2. SAM (MobileSAM or SAM2) segments objects within bounding boxes
-# 3. RGB and depth crops are extracted with segmentation masks
-# 4. MegaDescriptor extracts features from both RGB and depth
-# 5. Features are fused with weighted combination (70% RGB + 30% depth)
-# 6. Depth shape statistics provide geometric consistency
-# 7. Enhanced matching considers both appearance and shape similarity
+# Performance tuning
+rgb_weight: 0.7
+depth_weight: 0.3
+depth_shape_consistency: true
+consistency_bonus_threshold: 0.4
