@@ -15,39 +15,40 @@ horse_pose_estimator: superanimal
 sam_model: sam2
 
 # Confidence thresholds
-confidence_human_detection: 0.5
-confidence_horse_detection: 0.5
+confidence_human_detection: 0.8
+confidence_horse_detection: 0.8
 confidence_human_pose: 0.5
 confidence_horse_pose_superanimal: 0.5
 confidence_horse_pose_vitpose: 0.5
 
 # Basic settings
 jockey_overlap_threshold: 0.4
-max_frames: null
+max_frames: 2000
 device: cuda
 
 # SAMURAI TRACKING SETTINGS
 enable_reid_pipeline: true
 samurai_motion_weight: 0.5
-samurai_memory_size: 22
+samurai_memory_size: 30
 samurai_similarity_threshold: 0.15
-samurai_max_lost_frames: 25
+samurai_max_lost_frames: 50
+visual_recovery_threshold: 0.15 
 
 # ReID and feature settings
-reid_similarity_threshold: 0.3
-reid_embedding_history_size: 15
+reid_similarity_threshold: 0.1
+reid_embedding_history_size: 50
 enable_depth_anything: true
 enable_megadescriptor: true
 
 # Motion and distance settings
-motion_distance_threshold: 200
-acceleration_prediction: true
+motion_distance_threshold: 400
+acceleration_prediction: false
 visual_memory_enabled: true
 
 # Track management
-max_tracks_per_frame: 15
+max_tracks_per_frame: 11
 track_consolidation_enabled: true
-consolidation_similarity_threshold: 0.7
+consolidation_similarity_threshold: 0.5
 
 # Performance tuning
 rgb_weight: 0.7

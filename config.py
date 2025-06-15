@@ -94,7 +94,7 @@ class Config:
         
         # ===== ADVANCED SAMURAI SETTINGS =====
         self.samurai_template_update_threshold = 0.6
-        self.visual_recovery_threshold = 0.3
+        self.visual_recovery_threshold = 0.15
         self.motion_weight = 0.3  # Alternative name for samurai_motion_weight
         self.feature_weight_by_confidence = True
         self.motion_prediction_enabled = True
