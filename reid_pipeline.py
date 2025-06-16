@@ -708,6 +708,11 @@ class EnhancedReIDPipeline:
         for i, track_id in enumerate(detections.tracker_id):
             if track_id < 0:
                 continue
+
+
+            if i >= len(reid_features):
+                print(f"⚠️ Missing ReID feature for detection {i}; skipping track assignment")
+                continue
             
             # STABILITY CHECK using config cooling period
             if self.stability_manager.is_track_locked(track_id):
