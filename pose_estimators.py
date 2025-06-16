@@ -123,7 +123,7 @@ class PoseEstimationManager:
         
         for box_idx in range(num_boxes):
             # Get poses for this box (should be just one, but might be multiple or zero)
-            poses_for_this_box = [p for i, p in enumerate(poses) if i == box_idx]
+            poses_for_this_box = [p for p in poses if p.get('box_index') == box_idx]
             
             if poses_for_this_box:
                 # Select best pose for this box

@@ -1,4 +1,5 @@
-# Clean config.yaml (removed duplicates from your version)
+# Enhanced ReID Configuration
+# Intelligent track assignment with quality monitoring
 
 # Video and output settings
 video_path: inputs/horse_11.mp4
@@ -11,11 +12,11 @@ horse_detector: rtdetr
 human_pose_estimator: vitpose
 horse_pose_estimator: superanimal
 
-# SAM model for SAMURAI tracking
+# SAM model for Enhanced ReID
 sam_model: sam2
 
 # Confidence thresholds
-confidence_human_detection: 0.8
+confidence_human_detection: 0.7
 confidence_horse_detection: 0.8
 confidence_human_pose: 0.5
 confidence_horse_pose_superanimal: 0.5
@@ -23,35 +24,24 @@ confidence_horse_pose_vitpose: 0.5
 
 # Basic settings
 jockey_overlap_threshold: 0.4
-max_frames: 2000
+max_frames: 
 device: cuda
 
-# SAMURAI TRACKING SETTINGS
+# ENHANCED REID PIPELINE SETTINGS
 enable_reid_pipeline: true
-samurai_motion_weight: 0.5
-samurai_memory_size: 30
-samurai_similarity_threshold: 0.15
-samurai_max_lost_frames: 50
-visual_recovery_threshold: 0.15 
+reid_similarity_threshold: 0.3
 
-# ReID and feature settings
-reid_similarity_threshold: 0.1
-reid_embedding_history_size: 50
+# Track Quality Monitoring
+track_stability_threshold: 0.3    # Threshold for unstable tracks (lower = more aggressive reassignment)
+track_newness_threshold: 5        # Frames to consider track "new"
+quality_stability_window: 10      # Window for calculating stability metrics
+
+# Memory and Motion Settings
+samurai_memory_size: 10           # Memory size for track history
+motion_distance_threshold: 200    # Motion prediction threshold (pixels)
+
+# Components
 enable_depth_anything: true
-enable_megadescriptor: true
 
-# Motion and distance settings
-motion_distance_threshold: 400
-acceleration_prediction: false
-visual_memory_enabled: true
-
-# Track management
-max_tracks_per_frame: 11
-track_consolidation_enabled: true
-consolidation_similarity_threshold: 0.5
-
-# Performance tuning
-rgb_weight: 0.7
-depth_weight: 0.3
-depth_shape_consistency: true
-consistency_bonus_threshold: 0.4
+# Performance Settings
+max_tracks_per_frame: 11          # Limit to expected number of horses
