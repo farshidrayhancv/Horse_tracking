@@ -59,65 +59,25 @@ class Config:
         # ===== BASIC SETTINGS =====
         self.jockey_overlap_threshold = 0.4
         
-        # ===== SAMURAI TRACKING SETTINGS =====
+        # ===== ENHANCED REID PIPELINE SETTINGS =====
         # Core ReID Pipeline
         self.enable_reid_pipeline = True
         self.reid_similarity_threshold = 0.3
-        self.reid_embedding_history_size = 15
+        
+        # Enhanced Track Quality Monitoring
+        self.track_stability_threshold = 0.4  # Threshold for considering track unstable
+        self.track_newness_threshold = 5      # Frames to consider track "new"
+        self.quality_stability_window = 10    # Window for calculating stability metrics
+        
+        # Memory and Motion Settings
+        self.samurai_memory_size = 15
+        self.motion_distance_threshold = 150  # Lower for broadcast footage
         
         # Component toggles
-        self.enable_mobile_sam = True  # Backward compatibility
         self.enable_depth_anything = True
-        self.enable_megadescriptor = True
-        
-        # ===== SAMURAI MOTION-AWARE TRACKING =====
-        self.samurai_motion_weight = 0.5
-        self.samurai_memory_size = 50
-        self.samurai_similarity_threshold = 0.15
-        self.samurai_max_lost_frames = 25
-        
-        # ===== DISTANCE AND MOTION SETTINGS =====
-        self.motion_distance_threshold = 200
-        self.acceleration_prediction = True
-        self.visual_memory_enabled = True
-        
-        # ===== TRACK MANAGEMENT SETTINGS =====
-        self.max_tracks_per_frame = 15
-        self.track_consolidation_enabled = True
-        self.consolidation_similarity_threshold = 0.7
         
         # ===== PERFORMANCE TUNING =====
-        self.rgb_weight = 0.7
-        self.depth_weight = 0.3
-        self.depth_shape_consistency = True
-        self.consistency_bonus_threshold = 0.4
-        
-        # ===== ADVANCED SAMURAI SETTINGS =====
-        self.samurai_template_update_threshold = 0.6
-        self.visual_recovery_threshold = 0.15
-        self.motion_weight = 0.3  # Alternative name for samurai_motion_weight
-        self.feature_weight_by_confidence = True
-        self.motion_prediction_enabled = True
-        
-        # ===== VISUALIZATION SETTINGS =====
-        self.show_motion_predictions = True
-        self.show_track_history = True
-        self.show_confidence_scores = True
-        self.visualization_history_length = 10
-        
-        # ===== MEMORY AND CLEANUP SETTINGS =====
-        self.track_memory_cleanup_interval = 50
-        self.max_inactive_tracks = 100
-        self.confidence_decay_rate = 0.95
-        
-        # ===== DETECTION AND FILTERING =====
-        self.detection_overlap_threshold = 0.3
-        self.min_detection_confidence = 0.3
-        
-        # ===== QUALITY AND VALIDATION =====
-        self.mask_quality_threshold = 0.1
-        self.temporal_consistency_weight = 0.2
-        self.spatial_consistency_weight = 0.3
+        self.max_tracks_per_frame = 11  # Limit to expected number of horses
         
         # Load from file if provided
         if config_file:
@@ -166,265 +126,102 @@ class Config:
                 for setting in new_settings:
                     print(f"      - {setting}: {getattr(self, setting)}")
             
-            # Show SAMURAI status
+            # Show Enhanced ReID status
             if getattr(self, 'enable_reid_pipeline', False):
                 sam_model = getattr(self, 'sam_model', 'none')
-                print(f"   🎯 SAMURAI tracking: ENABLED with {sam_model.upper()}")
-                
-                # Validate key SAMURAI settings
-                key_settings = [
-                    'motion_distance_threshold', 
-                    'acceleration_prediction',
-                    'visual_memory_enabled',
-                    'max_tracks_per_frame',
-                    'track_consolidation_enabled'
-                ]
-                
-                print(f"   🔧 Key SAMURAI settings loaded:")
-                for setting in key_settings:
-                    if hasattr(self, setting):
-                        value = getattr(self, setting)
-                        print(f"      - {setting}: {value}")
-                    else:
-                        print(f"      - {setting}: NOT SET (will use default)")
+                print(f"   🎯 Enhanced ReID Pipeline: ENABLED with {sam_model.upper()}")
+                print(f"   🧠 Intelligent Track Assignment: Quality-based reassignment")
+                print(f"   📊 Track Stability Monitoring: {getattr(self, 'track_stability_threshold', 'not set')}")
             else:
-                print(f"   🎯 SAMURAI tracking: DISABLED")
+                print(f"   🎯 Enhanced ReID Pipeline: DISABLED")
                 
         except Exception as e:
             print(f"❌ Error loading config file: {e}")
             import traceback
             traceback.print_exc()
     
-    def get_all_settings(self):
-        """Get all current settings as a dictionary"""
-        settings = {}
-        for key in dir(self):
-            if not key.startswith('_') and not key.isupper() and not callable(getattr(self, key)):
-                settings[key] = getattr(self, key)
-        return settings
-    
-    def validate_samurai_settings(self):
-        """Validate that all SAMURAI settings are properly loaded"""
-        required_settings = {
-            'motion_distance_threshold': 200,
-            'acceleration_prediction': True,
-            'visual_memory_enabled': True,
-            'max_tracks_per_frame': 15,
-            'track_consolidation_enabled': True,
-            'consolidation_similarity_threshold': 0.7,
-            'samurai_motion_weight': 0.5,
-            'samurai_memory_size': 50,
-            'samurai_similarity_threshold': 0.15,
-            'samurai_max_lost_frames': 25
-        }
-        
-        missing_settings = []
-        for setting, default_value in required_settings.items():
-            if not hasattr(self, setting):
-                setattr(self, setting, default_value)
-                missing_settings.append(setting)
-        
-        if missing_settings:
-            print(f"⚠️ Added missing SAMURAI settings with defaults:")
-            for setting in missing_settings:
-                print(f"   - {setting}: {getattr(self, setting)}")
-        
-        return len(missing_settings) == 0
-    
-    def enable_samurai_features(self):
-        """Enable all SAMURAI features with optimal settings"""
+    def enable_enhanced_reid(self):
+        """Enable enhanced ReID features with optimal settings"""
         self.enable_reid_pipeline = True
         self.sam_model = 'sam2'
-        self.samurai_motion_weight = 0.5
-        self.samurai_memory_size = 50
-        self.reid_similarity_threshold = 0.25
-        self.motion_distance_threshold = 200
-        self.acceleration_prediction = True
-        self.visual_memory_enabled = True
-        self.track_consolidation_enabled = True
+        self.reid_similarity_threshold = 0.3
+        self.track_stability_threshold = 0.4
+        self.track_newness_threshold = 5
+        self.motion_distance_threshold = 150
         self.enable_depth_anything = True
-        self.enable_megadescriptor = True
-        print("✅ SAMURAI features enabled with optimal settings")
+        print("✅ Enhanced ReID features enabled")
     
-    def disable_samurai_features(self):
-        """Disable SAMURAI features for faster processing"""
+    def disable_enhanced_reid(self):
+        """Disable enhanced ReID for faster processing"""
         self.enable_reid_pipeline = False
         self.sam_model = 'none'
         self.enable_depth_anything = False
-        self.enable_megadescriptor = False
-        self.track_consolidation_enabled = False
-        print("✅ SAMURAI features disabled for faster processing")
+        print("✅ Enhanced ReID features disabled")
     
     def set_performance_mode(self, mode: str):
         """Set performance mode: 'speed', 'balanced', or 'accuracy'"""
         if mode == 'speed':
             self.sam_model = 'mobilesam'
-            self.samurai_memory_size = 20
-            self.reid_embedding_history_size = 8
+            self.samurai_memory_size = 10
             self.enable_depth_anything = False
-            self.motion_distance_threshold = 150
-            self.max_tracks_per_frame = 12
-            print("🚀 Performance mode: SPEED (faster processing)")
+            self.motion_distance_threshold = 100
+            self.quality_stability_window = 5
+            print("🚀 Performance mode: SPEED")
             
         elif mode == 'balanced':
             self.sam_model = 'sam2'
-            self.samurai_memory_size = 30
-            self.reid_embedding_history_size = 12
+            self.samurai_memory_size = 15
             self.enable_depth_anything = True
-            self.motion_distance_threshold = 200
-            self.max_tracks_per_frame = 15
-            print("⚖️ Performance mode: BALANCED (good speed + accuracy)")
+            self.motion_distance_threshold = 150
+            self.quality_stability_window = 10
+            print("⚖️ Performance mode: BALANCED")
             
         elif mode == 'accuracy':
             self.sam_model = 'sam2'
-            self.samurai_memory_size = 50
-            self.reid_embedding_history_size = 20
+            self.samurai_memory_size = 20
             self.enable_depth_anything = True
-            self.samurai_max_lost_frames = 30
-            self.motion_distance_threshold = 250
-            self.max_tracks_per_frame = 20
-            print("🎯 Performance mode: ACCURACY (best tracking quality)")
+            self.motion_distance_threshold = 200
+            self.quality_stability_window = 15
+            print("🎯 Performance mode: ACCURACY")
             
         else:
             print(f"❌ Invalid mode. Available: 'speed', 'balanced', 'accuracy'")
     
-    def set_human_detector(self, detector: str):
-        if detector in self.HUMAN_DETECTORS:
-            self.human_detector = detector
-            print(f"✅ Human detector: {self.HUMAN_DETECTORS[detector]}")
-        else:
-            print(f"❌ Invalid human detector. Available: {list(self.HUMAN_DETECTORS.keys())}")
-    
-    def set_horse_detector(self, detector: str):
-        if detector in self.HORSE_DETECTORS:
-            self.horse_detector = detector
-            print(f"✅ Horse detector: {self.HORSE_DETECTORS[detector]}")
-        else:
-            print(f"❌ Invalid horse detector. Available: {list(self.HORSE_DETECTORS.keys())}")
-    
-    def set_human_pose_estimator(self, estimator: str):
-        if estimator in self.HUMAN_POSE_ESTIMATORS:
-            self.human_pose_estimator = estimator
-            print(f"✅ Human pose estimator: {self.HUMAN_POSE_ESTIMATORS[estimator]}")
-        else:
-            print(f"❌ Invalid human pose estimator. Available: {list(self.HUMAN_POSE_ESTIMATORS.keys())}")
-    
-    def set_horse_pose_estimator(self, estimator: str):
-        if estimator in self.HORSE_POSE_ESTIMATORS:
-            self.horse_pose_estimator = estimator
-            print(f"✅ Horse pose estimator: {self.HORSE_POSE_ESTIMATORS[estimator]}")
-        else:
-            print(f"❌ Invalid horse pose estimator. Available: {list(self.HORSE_POSE_ESTIMATORS.keys())}")
-    
-    def set_sam_model(self, model: str):
-        if model in self.SAM_MODELS:
-            self.sam_model = model
-            print(f"✅ SAM model: {self.SAM_MODELS[model]}")
-        else:
-            print(f"❌ Invalid SAM model. Available: {list(self.SAM_MODELS.keys())}")
-    
-    def set_confidence_threshold(self, threshold: float):
-        """Set confidence threshold for all models"""
-        self.confidence_human_detection = threshold
-        self.confidence_horse_detection = threshold
-        self.confidence_human_pose = threshold
-        self.confidence_horse_pose_superanimal = threshold
-        self.confidence_horse_pose_vitpose = threshold
-        print(f"✅ All confidence thresholds set to {threshold}")
-    
     def print_config(self):
+        """Print current configuration"""
         print("\n🔧 Current Configuration:")
         print(f"   Human detector: {self.HUMAN_DETECTORS[self.human_detector]}")
         print(f"   Horse detector: {self.HORSE_DETECTORS[self.horse_detector]}")
         print(f"   Human pose: {self.HUMAN_POSE_ESTIMATORS[self.human_pose_estimator]}")
         print(f"   Horse pose: {self.HORSE_POSE_ESTIMATORS[self.horse_pose_estimator]}")
         print(f"   SAM model: {self.SAM_MODELS[self.sam_model]}")
-        print(f"   Confidence - Human detection: {self.confidence_human_detection}")
-        print(f"   Confidence - Horse detection: {self.confidence_horse_detection}")
-        print(f"   Confidence - Human pose: {self.confidence_human_pose}")
-        print(f"   Confidence - Horse pose (SuperAnimal): {self.confidence_horse_pose_superanimal}")
-        print(f"   Confidence - Horse pose (ViTPose): {self.confidence_horse_pose_vitpose}")
         print(f"   Device: {self.device}")
         print(f"   Display: {self.display}")
         
-        # SAMURAI status with ALL settings
+        # Enhanced ReID status
         if getattr(self, 'enable_reid_pipeline', False):
-            print(f"\n🎯 SAMURAI Enhanced Tracking: ENABLED")
-            
-            # Core settings
+            print(f"\n🎯 Enhanced ReID Pipeline: ENABLED")
             print(f"   Core Settings:")
             print(f"   - SAM model: {getattr(self, 'sam_model', 'not set')}")
-            print(f"   - Motion weight: {getattr(self, 'samurai_motion_weight', 'not set')}")
+            print(f"   - Similarity threshold: {getattr(self, 'reid_similarity_threshold', 'not set')}")
             print(f"   - Memory size: {getattr(self, 'samurai_memory_size', 'not set')} frames")
-            print(f"   - Similarity threshold: {getattr(self, 'samurai_similarity_threshold', 'not set')}")
-            print(f"   - Max lost frames: {getattr(self, 'samurai_max_lost_frames', 'not set')}")
             
-            # Motion settings
-            print(f"   Motion & Distance:")
+            print(f"   Quality Monitoring:")
+            print(f"   - Stability threshold: {getattr(self, 'track_stability_threshold', 'not set')}")
+            print(f"   - Newness threshold: {getattr(self, 'track_newness_threshold', 'not set')} frames")
+            print(f"   - Stability window: {getattr(self, 'quality_stability_window', 'not set')} frames")
+            
+            print(f"   Motion Settings:")
             print(f"   - Distance threshold: {getattr(self, 'motion_distance_threshold', 'not set')} pixels")
-            print(f"   - Acceleration prediction: {getattr(self, 'acceleration_prediction', 'not set')}")
-            print(f"   - Visual memory: {getattr(self, 'visual_memory_enabled', 'not set')}")
             
-            # Track management
-            print(f"   Track Management:")
-            print(f"   - Max tracks/frame: {getattr(self, 'max_tracks_per_frame', 'not set')}")
-            print(f"   - Track consolidation: {getattr(self, 'track_consolidation_enabled', 'not set')}")
-            print(f"   - Consolidation threshold: {getattr(self, 'consolidation_similarity_threshold', 'not set')}")
-            
-            # RGB-D fusion
-            print(f"   RGB-D Fusion:")
-            print(f"   - RGB weight: {getattr(self, 'rgb_weight', 'not set')}")
-            print(f"   - Depth weight: {getattr(self, 'depth_weight', 'not set')}")
-            print(f"   - Depth consistency: {getattr(self, 'depth_shape_consistency', 'not set')}")
-            
-            # Components
             print(f"   Components:")
             print(f"   - Depth-Anything: {getattr(self, 'enable_depth_anything', 'not set')}")
-            print(f"   - MegaDescriptor: {getattr(self, 'enable_megadescriptor', 'not set')}")
             
         else:
-            print(f"\n🎯 SAMURAI Enhanced Tracking: DISABLED")
+            print(f"\n🎯 Enhanced ReID Pipeline: DISABLED")
     
-    def print_all_settings(self):
-        """Print ALL loaded settings for debugging"""
-        print("\n📋 ALL LOADED SETTINGS:")
-        settings = self.get_all_settings()
-        
-        # Group settings by category
-        categories = {
-            'Basic': ['video_path', 'output_path', 'display', 'device', 'max_frames'],
-            'Models': ['human_detector', 'horse_detector', 'human_pose_estimator', 'horse_pose_estimator', 'sam_model'],
-            'Confidence': [k for k in settings.keys() if 'confidence' in k],
-            'SAMURAI Core': [k for k in settings.keys() if 'samurai' in k or 'reid' in k],
-            'Motion': [k for k in settings.keys() if 'motion' in k or 'acceleration' in k or 'visual_memory' in k],
-            'Tracking': [k for k in settings.keys() if 'track' in k or 'consolidation' in k],
-            'Performance': [k for k in settings.keys() if any(word in k for word in ['rgb', 'depth', 'weight', 'threshold'])],
-            'Other': []
-        }
-        
-        # Categorize all settings
-        categorized = set()
-        for category, keys in categories.items():
-            if category != 'Other':
-                categorized.update(keys)
-        
-        # Add uncategorized settings to 'Other'
-        for key in settings.keys():
-            if key not in categorized:
-                categories['Other'].append(key)
-        
-        # Print by category
-        for category, keys in categories.items():
-            if not keys:
-                continue
-            print(f"\n  {category}:")
-            for key in sorted(keys):
-                if key in settings:
-                    value = settings[key]
-                    print(f"    {key}: {value}")
-    
-    def create_template_config(self, filename: str = "template_config.yaml"):
-        """Create a template config with all available settings"""
+    def create_template_config(self, filename: str = "enhanced_config_template.yaml"):
+        """Create template config with enhanced ReID settings"""
         template = {
             '# Basic Settings': None,
             'video_path': 'inputs/your_video.mp4',
@@ -450,38 +247,30 @@ class Config:
             '# Basic Settings': None,
             'jockey_overlap_threshold': 0.4,
             
-            '# SAMURAI Tracking': None,
+            '# Enhanced ReID Pipeline': None,
             'enable_reid_pipeline': True,
-            'samurai_motion_weight': 0.5,
-            'samurai_memory_size': 50,
-            'samurai_similarity_threshold': 0.15,
-            'samurai_max_lost_frames': 25,
-            
-            '# Motion and Distance': None,
-            'motion_distance_threshold': 200,
-            'acceleration_prediction': True,
-            'visual_memory_enabled': True,
-            
-            '# Track Management': None,
-            'max_tracks_per_frame': 15,
-            'track_consolidation_enabled': True,
-            'consolidation_similarity_threshold': 0.7,
-            
-            '# RGB-D Fusion': None,
             'reid_similarity_threshold': 0.3,
-            'reid_embedding_history_size': 15,
+            
+            '# Track Quality Monitoring': None,
+            'track_stability_threshold': 0.4,
+            'track_newness_threshold': 5,
+            'quality_stability_window': 10,
+            
+            '# Memory and Motion': None,
+            'samurai_memory_size': 15,
+            'motion_distance_threshold': 150,
+            
+            '# Components': None,
             'enable_depth_anything': True,
-            'enable_megadescriptor': True,
-            'rgb_weight': 0.7,
-            'depth_weight': 0.3,
-            'depth_shape_consistency': True,
-            'consistency_bonus_threshold': 0.4
+            
+            '# Performance': None,
+            'max_tracks_per_frame': 11
         }
         
         try:
             with open(filename, 'w') as f:
-                f.write("# Complete SAMURAI Configuration Template\n")
-                f.write("# All available settings with descriptions\n\n")
+                f.write("# Enhanced ReID Configuration Template\n")
+                f.write("# Intelligent track assignment with quality monitoring\n\n")
                 
                 for key, value in template.items():
                     if key.startswith('#'):
@@ -489,6 +278,6 @@ class Config:
                     elif value is not None:
                         f.write(f"{key}: {value}\n")
                         
-            print(f"✅ Template config created: {filename}")
+            print(f"✅ Enhanced template config created: {filename}")
         except Exception as e:
             print(f"❌ Error creating template: {e}")
