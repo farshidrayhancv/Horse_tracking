@@ -740,11 +740,11 @@ class ReIDPipeline:
         """Enhanced aggressive matching with adaptive thresholds"""
         
         if len(self.memory.feature_memory) == 0:
+            print(f"DEBUG: No memory tracks to match against")
             return -1
-        
-        best_similarity = 0.0
-        best_track_id = -1
-        
+    
+        print(f"DEBUG: Matching against {len(self.memory.feature_memory)} memory tracks")
+
         # Use adaptive threshold based on frame count and track count
         base_threshold = self.similarity_threshold
         
@@ -760,6 +760,7 @@ class ReIDPipeline:
         
         for track_id in self.memory.feature_memory:
             similarity = self.match_with_memory_improved(query_feature, track_id)
+            print(f"DEBUG: Track {track_id} similarity: {similarity:.3f} (threshold: {adaptive_threshold:.3f})")
             track_scores.append((track_id, similarity))
             
             if similarity > best_similarity and similarity > adaptive_threshold:
@@ -962,7 +963,7 @@ class ReIDPipeline:
             # Update lost track counters
             self.update_lost_track_counters(enhanced_detections)
             
-            print(f"📊 Frame {self.frame_count}: {recoveries_this_frame} recoveries, {self.reassignment_count} total")
+            # print(f"📊 Frame {self.frame_count}: {recoveries_this_frame} recoveries, {self.reassignment_count} total")
         
         return enhanced_detections
     

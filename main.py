@@ -1,6 +1,6 @@
 """
-Enhanced main.py with SAMURAI integration
-FIXED VERSION - Replace your existing main.py with this
+Enhanced main.py with COMPLETE DEBUG LOGGING integrated
+REPLACE your existing main.py with this complete version
 """
 
 import cv2
@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import warnings
 import re
+import time
 from pathlib import Path
 
 # Local imports
@@ -16,7 +17,8 @@ from models import SuperAnimalQuadruped
 from detectors import DetectionManager
 from pose_estimators import PoseEstimationManager
 from visualizers import Visualizer
-from reid_pipeline import ReIDPipeline  # This now has SAMURAI features
+from reid_pipeline import ReIDPipeline
+from debug_logger import TrackingDebugLogger  # NEW IMPORT
 
 # Suppress warnings but keep errors and status prints
 warnings.filterwarnings("ignore")
@@ -59,6 +61,10 @@ class HybridPoseSystem:
         self.video_path = Path(video_path)
         self.config = config
         
+        # Initialize debug logger FIRST
+        self.debug_logger = TrackingDebugLogger(self.config)
+        self.debug_logger.set_video_name(str(self.video_path))
+        
         # Parse expected counts from filename
         self.expected_horses, self.expected_jockeys = self.parse_filename_counts()
         
@@ -97,6 +103,7 @@ class HybridPoseSystem:
         self.config.print_config()
         print(f"🎯 Expected: {self.expected_horses} horses, {self.expected_jockeys} jockeys")
         print(f"🐴🏇 Enhanced Pose System with SAMURAI ready: {self.total_frames} frames @ {self.fps} FPS")
+        print(f"📊 Debug logging enabled - logs will be saved at end of inference")
     
     def parse_filename_counts(self):
         """Parse filename to extract expected horse/jockey counts"""
@@ -123,20 +130,19 @@ class HybridPoseSystem:
         # Initialize trackers with video FPS
         self.horse_tracker = ByteTrack(
             frame_rate=int(self.fps),
-            track_activation_threshold=0.5,      # Lower threshold for track continuation  
-            lost_track_buffer=25,       # Keep tracks longer (2.4 seconds @ 25fps)
-            minimum_matching_threshold=0.5,      # Higher threshold for matching
+            track_activation_threshold=0.6,
+            lost_track_buffer=50,
+            minimum_matching_threshold=0.6,
             minimum_consecutive_frames=5,
         )
 
         self.human_tracker = ByteTrack(
             frame_rate=int(self.fps),
-            track_activation_threshold=0.5,      # Lower threshold for track continuation  
-            lost_track_buffer=15,       # Keep tracks longer (2.4 seconds @ 25fps)
-            minimum_matching_threshold=0.5,      # Higher threshold for matching
+            track_activation_threshold=0.6,
+            lost_track_buffer=50,
+            minimum_matching_threshold=0.6,
             minimum_consecutive_frames=5,
         )
-
         
         print(f"✅ ByteTracks initialized @ {self.fps} FPS")
     
@@ -303,15 +309,30 @@ class HybridPoseSystem:
             display_width = min(1200, self.width)
             display_height = int(self.height * (display_width / self.width))
             cv2.resizeWindow(window_name, display_width, display_height)
+
+        intial_frame = 1000
         
         while frame_count < max_frames:
             ret, frame = self.cap.read()
             if not ret:
                 break
+
+            if frame_count < intial_frame:
+                # Skip initial frames for warm-up
+                frame_count += 1
+                continue
+            
+            # 📊 LOG: Frame start
+            frame_start_time = time.time()
+            self.debug_logger.log_frame_start(frame_count, frame.shape)
             
             # STEP 1: Detect objects based on config
             human_detections = self.detection_manager.detect_humans(frame)
             horse_detections = self.detection_manager.detect_horses(frame)
+            
+            # 📊 LOG: Detections
+            detection_method = f"H:{self.config.human_detector}/Ho:{self.config.horse_detector}"
+            self.debug_logger.log_detections(human_detections, horse_detections, detection_method)
             
             # STEP 2: Limit detections to expected counts
             human_detections = self.limit_detections(human_detections, self.expected_jockeys, "jockeys")
@@ -321,6 +342,9 @@ class HybridPoseSystem:
             if sv and self.horse_tracker and self.human_tracker:
                 tracked_horses = self.horse_tracker.update_with_detections(horse_detections)
                 tracked_humans = self.human_tracker.update_with_detections(human_detections)
+                
+                # 📊 LOG: Tracking updates
+                self.debug_logger.log_tracking_update(tracked_humans, tracked_horses, "ByteTrack")
                 
                 # Update tracking stats
                 if len(tracked_horses) > 0:
@@ -339,9 +363,15 @@ class HybridPoseSystem:
             
             # STEP 4: Apply Enhanced SAMURAI Re-identification Pipeline
             tracking_info = {}
+            recovered_tracks = []
+            
             if self.reid_pipeline and getattr(self.config, 'enable_reid_pipeline', False):
                 # Process horses with SAMURAI enhancement
                 horse_rgb_crops, horse_depth_crops, depth_map, horse_reid_features, horse_depth_stats = self.reid_pipeline.process_frame(frame, tracked_horses)
+                
+                # 📊 LOG: Depth processing
+                self.debug_logger.log_depth_processing(depth_map, horse_depth_stats)
+                
                 tracked_horses_enhanced = self.reid_pipeline.enhance_tracking(tracked_horses, horse_reid_features, horse_depth_stats)
                 
                 # Process jockeys with standard RGB-D re-identification  
@@ -351,6 +381,16 @@ class HybridPoseSystem:
                 # Get current tracking information
                 tracking_info = self.reid_pipeline.get_tracking_info()
                 stats['reid_reassignments'] = self.reid_pipeline.get_reassignment_count()
+                
+                # 📊 LOG: ReID process
+                # Extract similarity scores and assignments (helper functions)
+                similarity_scores = {}  # Would need to be exposed from reid_pipeline
+                assignments = {}
+                untracked_count = sum(1 for tid in tracked_horses.tracker_id if tid < 0) if hasattr(tracked_horses, 'tracker_id') else 0
+                self.debug_logger.log_reid_process(horse_reid_features, similarity_scores, assignments, untracked_count)
+                
+                # 📊 LOG: SAMURAI tracking
+                self.debug_logger.log_samurai_tracking(tracking_info, recovered_tracks)
                 
                 # Update detections with enhanced tracking
                 tracked_horses = tracked_horses_enhanced
@@ -364,6 +404,9 @@ class HybridPoseSystem:
             # STEP 5: Estimate poses based on config
             human_poses = self.pose_manager.estimate_human_poses(frame, jockey_detections)
             horse_poses = self.pose_manager.estimate_horse_poses(frame, tracked_horses)
+            
+            # 📊 LOG: Pose estimation
+            self.debug_logger.log_pose_estimation(human_poses, horse_poses)
             
             # STEP 6: Associate poses with track IDs
             human_poses = self.associate_poses_with_tracks(human_poses, jockey_detections)
@@ -446,6 +489,10 @@ class HybridPoseSystem:
             
             frame_count += 1
             
+            # 📊 LOG: Frame end
+            frame_end_time = time.time()
+            self.debug_logger.log_frame_end(frame_end_time - frame_start_time)
+            
             # Update progress bar (only if available)
             if pbar:
                 samurai_status = f"SAMURAI:{tracking_info.get('active_tracks', 0)}T" if tracking_info else "SAMURAI:OFF"
@@ -461,6 +508,10 @@ class HybridPoseSystem:
         
         if pbar:
             pbar.close()
+        
+        # 📊 SAVE ALL DEBUG LOGS
+        print(f"📊 Saving comprehensive debug logs...")
+        log_files = self.debug_logger.save_logs(output_path)
         
         print(f"✅ SAMURAI-Enhanced processing complete!")
         print(f"📊 Final Stats:")
@@ -528,6 +579,7 @@ class HybridPoseSystem:
             info_lines.append(f"🎯 SAMURAI Tracking: DISABLED")
         
         info_lines.append(f"🎨 Yellow crosses = motion predictions | Consistent track colors")
+        info_lines.append(f"📊 Debug logging: ENABLED (logs saved at end)")
         
         if self.config.horse_pose_estimator == 'dual' and stats:
             info_lines.append(f"Competition - SuperAnimal:{stats.get('superanimal_wins', 0)} ViTPose:{stats.get('vitpose_wins', 0)}")
