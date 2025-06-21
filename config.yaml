@@ -1,121 +1,134 @@
-# Pack Racing Optimized Configuration
-# Tuned for tight pack formations with similar-looking horses
-# Based on analysis of broadcast racing footage showing overlapping brown horses
-# KEY GOAL: Stability over accuracy - prevent constant reassignments
+# Enhanced 3D Pose Integration Configuration
+# Advanced ReID with 3D pose features, GPU acceleration, and depth processing
 
-# Scenario Information
-scenario_name: pack_racing_optimized
-expected_duration_seconds: 120
-average_speed_mph: 35
-camera_setup: broadcast_side_view
-track_type: oval
-notes: "Tight pack formation with similar brown horses - prioritize stability"
-
-# Video and output settings
+# Basic Settings
 video_path: inputs/horse_11.mp4
 output_path: null
 display: false
 device: cuda
-max_frames: 1000
+max_frames: 9000
 
-# Model selection
+# Model Selection
 human_detector: rtdetr
 horse_detector: rtdetr
 human_pose_estimator: vitpose
 horse_pose_estimator: superanimal
 sam_model: sam2
 
-# STRICTER confidence thresholds (reduce false detections in pack)
-confidence_horse_detection: 0.7    # was 0.8, increase for pack racing
-confidence_human_detection: 0.7     # was 0.7, increase
-confidence_horse_pose_superanimal: 0.5  # was 0.6, increase
-confidence_horse_pose_vitpose: 0.5
+# Confidence Thresholds
+confidence_human_detection: 0.7
+confidence_horse_detection: 0.8
 confidence_human_pose: 0.5
+confidence_horse_pose_superanimal: 0.5
+confidence_horse_pose_vitpose: 0.5
 
-# MUCH STRICTER track stability (critical for pack racing)
-track_stability_threshold: 0.8      # was 0.3, MUCH stricter for similar horses
-track_newness_threshold: 15         # was 5, longer grace period for pack occlusions
-initial_assignment_threshold: 0.8   # was 0.5, much harder initial assignment
-reassignment_threshold: 0.95        # was 0.7, VERY hard to steal tracks in pack
+# Basic Settings
+jockey_overlap_threshold: 0.4
 
-# AGGRESSIVE stability controls (prevent oscillation in pack)
-cooling_period: 30                  # was 10, triple the cooling time
-oscillation_threshold: 1            # was 3, zero tolerance for oscillation
-stability_bonus_factor: 0.4         # was 0.2, big bonus for stable tracks
-stability_penalty_factor: 0.8       # was 0.5, big penalty for unstable tracks
-
-# EXTENDED motion parameters for pack dynamics
-motion_distance_threshold: 600      # was 200, much larger for pack position changes
-max_motion_speed: 75.0             # was 30, higher for pack racing
-motion_weight: 0.2                 # was 0.25, REDUCE (pack motion is chaotic)
-motion_prediction_frames: 5        # was 3, longer prediction window
-
-# MUCH LONGER memory for pack occlusions
-samurai_memory_size: 40            # was 10, 4x longer for frequent occlusions
-memory_cleanup_interval: 100       # was 50, cleanup much less frequently
-track_expiry_frames: 200           # was 100, keep tracks alive much longer
-
-# CONSERVATIVE quality monitoring for similar horses
-quality_stability_window: 20       # was 10, longer window
-confidence_variance_threshold: 0.1  # was 0.2, stricter confidence consistency
-position_variance_threshold: 200   # was 100, allow more variance in pack
-
-# STRICTER ByteTrack tuning for pack racing
-bytetrack_track_activation_threshold: 0.8  # was 0.6, much stricter
-bytetrack_lost_track_buffer: 100          # was 50, double the buffer
-bytetrack_minimum_matching_threshold: 0.8  # was 0.6, much stricter
-bytetrack_minimum_consecutive_frames: 5    # was 5, require consistency
-
-# FEATURE weights optimized for similar horses in pack
-visual_feature_weight: 0.3         # was 0.6, reduce (brown horses too similar)
-motion_feature_weight: 0.2         # was 0.25, reduce (pack motion chaotic)
-stability_feature_weight: 0.5      # was 0.15, MAJOR increase (stability is key)
-
-# Enhanced ReID pipeline - more conservative
+# Enhanced ReID Pipeline
 enable_reid_pipeline: true
-reid_similarity_threshold: 0.5     # was 0.3, higher threshold for pack
+reid_similarity_threshold: 0.3
+
+# Track Quality Monitoring
+track_stability_threshold: 0.3    # Lower = more aggressive reassignment
+track_newness_threshold: 5        # Frames to consider track "new"
+quality_stability_window: 10      # Window for calculating stability
+
+# Memory and Motion
+samurai_memory_size: 10           # Memory size for track history
+motion_distance_threshold: 200    # Motion prediction threshold (pixels)
+
+# Components
 enable_depth_anything: true
 
-# SAM segmentation - conservative for overlapping horses
-sam_multimask_output: false        # was true, single mask only (reduce confusion)
-sam_confidence_threshold: 0.7      # was 0.5, require better masks
-sam_center_point_weight: 1.0
-sam_bbox_prompt_enabled: true
+# ===== 3D POSE INTEGRATION =====
+# Core 3D Processing
+enable_3d_poses: true
+enable_3d_reid_features: true
+enable_gpu_acceleration_3d: true
+enable_batch_processing_3d: true
 
-# STRICTER similarity calculation for similar horses
-cosine_similarity_weight: 0.8      # was 0.7, rely more on cosine
-l2_similarity_weight: 0.2         # was 0.3, reduce L2 weight
+# Depth Processing and Smoothing
+depth_smoothing_algorithm: adaptive_gaussian  # 'gaussian', 'bilateral', 'adaptive_gaussian', 'none'
+depth_smoothing_factor: 0.4
+depth_temporal_smoothing: true
+depth_temporal_window: 5
+depth_outlier_threshold: 2.5      # Standard deviations for outlier removal
+depth_noise_reduction_strength: 0.7
 
-# Advanced feature extraction for pack racing
-crop_padding_factor: 0.03          # was 0.05, less padding (reduce overlap)
-min_crop_size: 60                  # was 50, slightly larger minimum
-feature_vector_size: 64
-color_histogram_bins: 6            # was 8, fewer bins (similar colors)
+# Advanced Depth Quality Enhancement  
+enable_depth_hole_filling: true
+depth_hole_filling_method: inpaint  # 'inpaint', 'interpolation', 'nearest'
+depth_edge_preservation: true
+depth_edge_threshold: 12.0
 
-# Depth processing - more tolerant for pack
-depth_weight: 0.25                 # was 0.3, reduce weight
-depth_variance_threshold: 2000     # was 1000, much more tolerant
-depth_normalization_range: 255
+# 3D Pose Quality Metrics
+min_valid_keypoints_3d: 6
+pose_3d_quality_threshold: 0.35
+enable_geometric_consistency_check: true
+geometric_plausibility_threshold: 0.65
 
-# Performance and limits
-max_tracks_per_frame: 11
-debug_logging: true
-visualization_enabled: true
-progress_bar_enabled: true
+# Enhanced 3D Geometric Features for ReID
+enable_volumetric_features: true
+enable_spatial_distribution_features: true
+enable_depth_gradient_features: true
+enable_pose_compactness_features: true
+enable_temporal_3d_features: true
 
-# PACK RACING SPECIFIC ADDITIONS
-# New parameters for pack racing scenarios
-pack_racing_mode: true             # Enable pack racing optimizations
-similar_appearance_penalty: 0.3    # Penalty for high visual similarity
-occlusion_tolerance: 0.8           # Higher tolerance for occlusions
-track_persistence_bias: 0.4        # Bias toward keeping existing tracks
+# 3D Feature Weighting for ReID (must sum to 1.0)
+visual_feature_weight: 0.35
+pose_3d_feature_weight: 0.30
+geometric_feature_weight: 0.20
+motion_weight: 0.10
+stability_weight: 0.05
 
-# Stability thresholds for pack racing
-min_frames_before_reassignment: 10  # Minimum frames before allowing reassignment
-max_reassignments_per_frame: 1      # Limit reassignments in pack scenarios
-pack_density_threshold: 0.6         # Threshold for detecting pack formation
+# GPU Acceleration Settings
+gpu_batch_size_3d: 64              # Batch size for 3D processing
+enable_gpu_depth_processing: true
+enable_gpu_geometric_calculations: true
+gpu_memory_optimization: true
 
-# Anti-fragmentation measures
-fragmentation_prevention: true      # Enable anti-fragmentation features
-track_consolidation_threshold: 0.9  # High threshold for track merging
-duplicate_track_detection: true     # Enable duplicate detection
+# Performance Optimization
+parallel_pose_processing: true
+max_concurrent_poses: 12
+enable_pose_caching: true
+pose_cache_size: 50
+
+# ===== 3D VISUALIZATION SETTINGS =====
+# Depth Visualization
+depth_visualization_scale: 5.0
+pose_3d_transparency: 0.7
+enable_depth_color_coding: true
+show_3d_pose_quality: true
+
+# 3D Display Options
+show_depth_values: true
+show_geometric_features: true
+depth_color_scheme: jet            # 'jet', 'viridis', 'plasma', 'hot'
+pose_3d_point_size_factor: 1.5
+
+# ===== ADVANCED 3D PROCESSING =====
+# Kalman Filtering for 3D Poses
+enable_3d_kalman_filtering: true
+kalman_process_noise: 0.08
+kalman_measurement_noise: 0.4
+
+# 3D Pose Temporal Consistency
+enable_temporal_pose_smoothing: true
+temporal_smoothing_window: 7
+temporal_consistency_weight: 0.3
+
+# Advanced Geometric Analysis
+enable_pose_symmetry_analysis: true
+enable_limb_length_consistency: true
+limb_length_variance_threshold: 0.2
+
+# Performance Settings
+max_tracks_per_frame: 11          # Limit to expected number of horses
+
+# ===== EXPERIMENTAL FEATURES =====
+# These are advanced features that may impact performance
+enable_pose_prediction: true      # Predict next frame pose
+pose_prediction_window: 3
+enable_multi_scale_depth: true    # Multi-resolution depth processing
+enable_depth_attention: true      # Attention-based depth weighting

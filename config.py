@@ -42,7 +42,7 @@ class Config:
         self.device = "cuda"
         self.max_frames = None
         
-        # ===== MODEL SELECTION =====
+        # Model selection defaults
         self.human_detector = 'rtdetr'
         self.horse_detector = 'rtdetr'
         self.human_pose_estimator = 'vitpose'
@@ -56,87 +56,110 @@ class Config:
         self.confidence_horse_pose_superanimal = 0.5
         self.confidence_horse_pose_vitpose = 0.5
         
-        # ===== DETECTION LIMITS =====
+        # ===== BASIC SETTINGS =====
         self.jockey_overlap_threshold = 0.4
-        self.max_tracks_per_frame = 11
         
-        # ===== BYTETRACK PARAMETERS =====
-        self.bytetrack_track_activation_threshold = 0.6
-        self.bytetrack_lost_track_buffer = 50
-        self.bytetrack_minimum_matching_threshold = 0.6
-        self.bytetrack_minimum_consecutive_frames = 5
-        
-        # ===== ENHANCED REID PIPELINE CORE =====
+        # ===== ENHANCED REID PIPELINE SETTINGS =====
+        # Core ReID Pipeline
         self.enable_reid_pipeline = True
         self.reid_similarity_threshold = 0.3
         
-        # ===== TRACK STABILITY & ASSIGNMENT THRESHOLDS =====
-        self.track_stability_threshold = 0.4        # Threshold for considering track unstable
-        self.track_newness_threshold = 5            # Frames to consider track "new"
-        self.initial_assignment_threshold = 0.5     # Easy initial assignment to memory tracks
-        self.reassignment_threshold = 0.7           # Hard to steal existing tracks (hysteresis)
+        # Enhanced Track Quality Monitoring
+        self.track_stability_threshold = 0.4  # Threshold for considering track unstable
+        self.track_newness_threshold = 5      # Frames to consider track "new"
+        self.quality_stability_window = 10    # Window for calculating stability metrics
         
-        # ===== STABILITY CONTROLS (Anti-Oscillation) =====
-        self.cooling_period = 10                    # Frames to lock after reassignment
-        self.oscillation_threshold = 3             # Max oscillations before penalty
-        self.stability_bonus_factor = 0.2          # Bonus for stable tracks
-        self.stability_penalty_factor = 0.5        # Penalty for oscillating tracks
+        # Memory and Motion Settings
+        self.samurai_memory_size = 15
+        self.motion_distance_threshold = 150  # Lower for broadcast footage
         
-        # ===== QUALITY MONITORING =====
-        self.quality_stability_window = 10         # Window for calculating stability metrics
-        self.confidence_variance_threshold = 0.2   # Max allowed confidence variance
-        self.position_variance_threshold = 100     # Max allowed position variance
-        self.min_valid_keypoints = 5               # Minimum keypoints for valid pose
+        # Component toggles
+        self.enable_depth_anything = True
         
-        # ===== MOTION PREDICTION =====
-        self.motion_distance_threshold = 150       # Motion prediction threshold (pixels)
-        self.max_motion_speed = 30.0               # Maximum speed limit (pixels/frame)
-        self.motion_weight = 0.25                  # Weight of motion in similarity calculation
-        self.motion_prediction_frames = 3          # Frames to use for motion prediction
+        # ===== 3D POSE INTEGRATION SETTINGS =====
+        # Core 3D Pose Processing
+        self.enable_3d_poses = True
+        self.enable_3d_reid_features = True
+        self.enable_gpu_acceleration_3d = True
+        self.enable_batch_processing_3d = True
         
-        # ===== MEMORY MANAGEMENT =====
-        self.samurai_memory_size = 15              # Memory size for track history
-        self.memory_cleanup_interval = 50          # Frames between memory cleanup
-        self.track_expiry_frames = 100             # Frames before track expires
+        # Depth Processing and Smoothing
+        self.depth_smoothing_algorithm = 'adaptive_gaussian'  # 'gaussian', 'bilateral', 'adaptive_gaussian', 'none'
+        self.depth_smoothing_factor = 0.3
+        self.depth_temporal_smoothing = True
+        self.depth_temporal_window = 5
+        self.depth_outlier_threshold = 2.5  # Standard deviations for outlier removal
+        self.depth_noise_reduction_strength = 0.7
         
-        # ===== FEATURE EXTRACTION & SIMILARITY =====
-        self.visual_feature_weight = 0.6           # Weight of visual features
-        self.motion_feature_weight = 0.25          # Weight of motion features  
-        self.stability_feature_weight = 0.15       # Weight of stability features
-        self.cosine_similarity_weight = 0.7        # Weight of cosine similarity
-        self.l2_similarity_weight = 0.3            # Weight of L2 distance similarity
+        # Advanced Depth Quality Enhancement
+        self.enable_depth_hole_filling = True
+        self.depth_hole_filling_method = 'inpaint'  # 'inpaint', 'interpolation', 'nearest'
+        self.depth_edge_preservation = True
+        self.depth_edge_threshold = 10.0
         
-        # ===== SAM SEGMENTATION PARAMETERS =====
-        self.sam_multimask_output = True           # Generate multiple mask candidates
-        self.sam_center_point_weight = 1.0         # Weight for center point prompt
-        self.sam_bbox_prompt_enabled = True        # Use bbox as prompt
-        self.sam_confidence_threshold = 0.5        # Minimum SAM mask confidence
+        # 3D Pose Quality Metrics
+        self.min_valid_keypoints_3d = 5
+        self.pose_3d_quality_threshold = 0.3
+        self.enable_geometric_consistency_check = True
+        self.geometric_plausibility_threshold = 0.6
         
-        # ===== DEPTH PROCESSING =====
-        self.enable_depth_anything = True          # Enable depth estimation
-        self.depth_weight = 0.3                    # Weight of depth features in RGB-D fusion
-        self.depth_variance_threshold = 1000       # Max depth variance for valid mask
-        self.depth_normalization_range = 255       # Depth map normalization range
+        # Enhanced 3D Geometric Features for ReID
+        self.enable_volumetric_features = True
+        self.enable_spatial_distribution_features = True
+        self.enable_depth_gradient_features = True
+        self.enable_pose_compactness_features = True
+        self.enable_temporal_3d_features = True
         
-        # ===== CROP & FEATURE EXTRACTION =====
-        self.crop_padding_factor = 0.05            # Padding around crops (5%)
-        self.min_crop_size = 50                    # Minimum crop size (pixels)
-        self.feature_vector_size = 64              # Size of extracted feature vectors
-        self.color_histogram_bins = 8              # Bins for color histograms
+        # 3D Feature Weighting for ReID
+        self.visual_feature_weight = 0.35
+        self.pose_3d_feature_weight = 0.30
+        self.geometric_feature_weight = 0.20
+        self.motion_weight = 0.10
+        self.stability_weight = 0.05
         
-        # ===== PERFORMANCE & DEBUG =====
-        self.debug_logging = True                  # Enable comprehensive debug logging
-        self.save_intermediate_crops = False       # Save RGB/depth crops for debugging
-        self.visualization_enabled = True          # Enable enhanced visualizations
-        self.progress_bar_enabled = True           # Show progress bars
+        # GPU Acceleration Settings
+        self.gpu_batch_size_3d = 32
+        self.enable_gpu_depth_processing = True
+        self.enable_gpu_geometric_calculations = True
+        self.gpu_memory_optimization = True
         
-        # ===== SCENARIO-SPECIFIC TUNING =====
-        # These will be overridden by scenario configs
-        self.scenario_name = "default"
-        self.expected_duration_seconds = 120
-        self.average_speed_mph = 35
-        self.camera_setup = "broadcast"
-        self.track_type = "oval"
+        # Performance Optimization
+        self.parallel_pose_processing = True
+        self.max_concurrent_poses = 4
+        self.enable_pose_caching = True
+        self.pose_cache_size = 50
+        
+        # ===== 3D VISUALIZATION SETTINGS =====
+        # Depth Visualization
+        self.depth_visualization_scale = 2.0
+        self.pose_3d_transparency = 0.7
+        self.enable_depth_color_coding = True
+        self.show_3d_pose_quality = True
+        
+        # 3D Pose Display Options
+        self.show_depth_values = True
+        self.show_geometric_features = False
+        self.depth_color_scheme = 'jet'  # 'jet', 'viridis', 'plasma', 'hot'
+        self.pose_3d_point_size_factor = 1.5
+        
+        # ===== ADVANCED 3D PROCESSING =====
+        # Kalman Filtering for 3D Poses
+        self.enable_3d_kalman_filtering = True
+        self.kalman_process_noise = 0.1
+        self.kalman_measurement_noise = 0.5
+        
+        # 3D Pose Temporal Consistency
+        self.enable_temporal_pose_smoothing = True
+        self.temporal_smoothing_window = 7
+        self.temporal_consistency_weight = 0.3
+        
+        # Advanced Geometric Analysis
+        self.enable_pose_symmetry_analysis = True
+        self.enable_limb_length_consistency = True
+        self.limb_length_variance_threshold = 0.2
+        
+        # ===== PERFORMANCE TUNING =====
+        self.max_tracks_per_frame = 11  # Limit to expected number of horses
         
         # Load from file if provided
         if config_file:
@@ -182,263 +205,332 @@ class Config:
             
             if new_settings:
                 print(f"   🆕 Added {len(new_settings)} new settings from YAML:")
-                for setting in new_settings[:5]:  # Show first 5
+                for setting in new_settings:
                     print(f"      - {setting}: {getattr(self, setting)}")
-                if len(new_settings) > 5:
-                    print(f"      ... and {len(new_settings) - 5} more")
             
-            # Show scenario-specific info if available
-            if hasattr(self, 'scenario_name'):
-                print(f"   🎯 Scenario: {self.scenario_name}")
-                if hasattr(self, 'expected_duration_seconds'):
-                    print(f"   ⏱️ Duration: {self.expected_duration_seconds}s @ {getattr(self, 'average_speed_mph', 'unknown')}mph")
+            # Show Enhanced ReID status
+            if getattr(self, 'enable_reid_pipeline', False):
+                sam_model = getattr(self, 'sam_model', 'none')
+                print(f"   🎯 Enhanced ReID Pipeline: ENABLED with {sam_model.upper()}")
+                print(f"   🧠 Intelligent Track Assignment: Quality-based reassignment")
+                print(f"   📊 Track Stability Monitoring: {getattr(self, 'track_stability_threshold', 'not set')}")
+            else:
+                print(f"   🎯 Enhanced ReID Pipeline: DISABLED")
+            
+            # Show 3D Pose Integration status
+            if getattr(self, 'enable_3d_poses', False):
+                depth_algorithm = getattr(self, 'depth_smoothing_algorithm', 'none')
+                gpu_accel = getattr(self, 'enable_gpu_acceleration_3d', False)
+                batch_proc = getattr(self, 'enable_batch_processing_3d', False)
+                print(f"   🎯 3D Pose Integration: ENABLED")
+                print(f"      - Depth Smoothing: {depth_algorithm.upper()}")
+                print(f"      - GPU Acceleration: {'ON' if gpu_accel else 'OFF'}")
+                print(f"      - Batch Processing: {'ON' if batch_proc else 'OFF'}")
+                print(f"      - Geometric Features: {'ON' if getattr(self, 'enable_volumetric_features', False) else 'OFF'}")
+            else:
+                print(f"   🎯 3D Pose Integration: DISABLED")
                 
         except Exception as e:
             print(f"❌ Error loading config file: {e}")
             import traceback
             traceback.print_exc()
     
-    def apply_horse_racing_preset(self):
-        """Apply optimized parameters for horse racing scenario"""
-        print("🏇 Applying HORSE RACING preset...")
-        
-        # Higher confidence thresholds for stable tracking
-        self.confidence_horse_detection = 0.8
-        self.confidence_human_detection = 0.7
-        self.confidence_horse_pose_superanimal = 0.6
-        
-        # Stricter track stability (less aggressive reassignment)
-        self.track_stability_threshold = 0.6        # Higher = more stable required
-        self.track_newness_threshold = 8            # Longer grace period for new tracks
-        self.initial_assignment_threshold = 0.6     # Harder initial assignment
-        self.reassignment_threshold = 0.8           # Much harder to steal tracks
-        
-        # Enhanced stability controls
-        self.cooling_period = 20                    # Longer cooling after reassignment
-        self.oscillation_threshold = 2             # Lower tolerance for oscillation
-        
-        # Motion parameters for 35mph horses
-        self.motion_distance_threshold = 400       # Much larger for fast movement
-        self.max_motion_speed = 50.0               # Higher speed limit
-        self.motion_weight = 0.35                  # Higher weight for motion consistency
-        
-        # Longer memory for occlusions
-        self.samurai_memory_size = 25              # Remember tracks longer
-        self.track_expiry_frames = 150             # Keep tracks alive longer
-        
-        # Quality monitoring for broadcast footage
-        self.quality_stability_window = 15         # Longer window for stability
-        self.bytetrack_lost_track_buffer = 75      # Keep lost tracks longer
-        
-        # Feature extraction optimized for horses
-        self.visual_feature_weight = 0.5           # Reduce visual weight (occlusions)
-        self.motion_feature_weight = 0.35          # Increase motion weight
-        self.stability_feature_weight = 0.15       # Keep stability weight
-        
-        print("✅ Horse racing preset applied - optimized for fast movement and broadcast footage")
-    
-    def apply_speed_preset(self):
-        """Apply settings optimized for processing speed"""
-        print("🚀 Applying SPEED preset...")
-        
-        self.sam_model = 'mobilesam'
-        self.samurai_memory_size = 8
-        self.enable_depth_anything = False
-        self.motion_distance_threshold = 200
-        self.quality_stability_window = 5
-        self.debug_logging = False
-        self.save_intermediate_crops = False
-        
-        print("✅ Speed preset applied")
-    
-    def apply_accuracy_preset(self):
-        """Apply settings optimized for maximum accuracy"""
-        print("🎯 Applying ACCURACY preset...")
-        
+    def enable_enhanced_reid(self):
+        """Enable enhanced ReID features with optimal settings"""
+        self.enable_reid_pipeline = True
         self.sam_model = 'sam2'
-        self.samurai_memory_size = 30
+        self.reid_similarity_threshold = 0.3
+        self.track_stability_threshold = 0.4
+        self.track_newness_threshold = 5
+        self.motion_distance_threshold = 150
         self.enable_depth_anything = True
-        self.motion_distance_threshold = 300
-        self.quality_stability_window = 20
-        self.cooling_period = 25
-        self.track_stability_threshold = 0.7
-        
-        print("✅ Accuracy preset applied")
+        print("✅ Enhanced ReID features enabled")
     
-    def create_horse_racing_config(self, filename: str = "horse_racing_optimized.yaml"):
-        """Create optimized config for horse racing"""
-        config_data = {
-            # Header
-            '# Horse Racing Optimized Configuration': None,
-            '# Tuned for 35mph horses on oval track with broadcast cameras': None,
-            '# Expected race duration: ~120 seconds': None,
-            '': None,
+    def enable_3d_pose_integration(self):
+        """Enable 3D pose integration with optimal settings"""
+        self.enable_3d_poses = True
+        self.enable_3d_reid_features = True
+        self.enable_gpu_acceleration_3d = True
+        self.enable_batch_processing_3d = True
+        self.depth_smoothing_algorithm = 'adaptive_gaussian'
+        self.enable_volumetric_features = True
+        self.enable_geometric_consistency_check = True
+        print("✅ 3D Pose Integration enabled with GPU acceleration")
+    
+    def disable_enhanced_reid(self):
+        """Disable enhanced ReID for faster processing"""
+        self.enable_reid_pipeline = False
+        self.sam_model = 'none'
+        self.enable_depth_anything = False
+        self.enable_3d_poses = False
+        print("✅ Enhanced ReID features disabled")
+    
+    def set_performance_mode(self, mode: str):
+        """Set performance mode: 'speed', 'balanced', or 'accuracy'"""
+        if mode == 'speed':
+            self.sam_model = 'mobilesam'
+            self.samurai_memory_size = 10
+            self.enable_depth_anything = False
+            self.motion_distance_threshold = 100
+            self.quality_stability_window = 5
+            # 3D pose speed optimizations
+            self.enable_3d_poses = False
+            self.enable_gpu_acceleration_3d = True
+            self.gpu_batch_size_3d = 16
+            self.depth_smoothing_algorithm = 'none'
+            print("🚀 Performance mode: SPEED (3D poses disabled)")
             
-            # Basic settings
-            'scenario_name': 'horse_racing',
-            'expected_duration_seconds': 120,
-            'average_speed_mph': 35,
-            'camera_setup': 'broadcast',
-            'track_type': 'oval',
-            '': None,
+        elif mode == 'balanced':
+            self.sam_model = 'sam2'
+            self.samurai_memory_size = 15
+            self.enable_depth_anything = True
+            self.motion_distance_threshold = 150
+            self.quality_stability_window = 10
+            # 3D pose balanced settings
+            self.enable_3d_poses = True
+            self.enable_gpu_acceleration_3d = True
+            self.gpu_batch_size_3d = 8
+            self.depth_smoothing_algorithm = 'gaussian'
+            self.enable_volumetric_features = True
+            print("⚖️ Performance mode: BALANCED (3D poses with GPU acceleration)")
             
-            # Video settings
-            'video_path': 'inputs/horse_race.mp4',
-            'output_path': None,
-            'display': False,
-            'device': 'cuda',
-            'max_frames': None,
-            '': None,
+        elif mode == 'accuracy':
+            self.sam_model = 'sam2'
+            self.samurai_memory_size = 20
+            self.enable_depth_anything = True
+            self.motion_distance_threshold = 200
+            self.quality_stability_window = 15
+            # 3D pose accuracy settings
+            self.enable_3d_poses = True
+            self.enable_gpu_acceleration_3d = True
+            self.gpu_batch_size_3d = 4
+            self.depth_smoothing_algorithm = 'adaptive_gaussian'
+            self.enable_volumetric_features = True
+            self.enable_geometric_consistency_check = True
+            self.enable_temporal_3d_features = True
+            print("🎯 Performance mode: ACCURACY (Full 3D pose analysis)")
             
-            # Model selection
-            'human_detector': 'rtdetr',
-            'horse_detector': 'rtdetr',
-            'human_pose_estimator': 'vitpose', 
-            'horse_pose_estimator': 'superanimal',
-            'sam_model': 'sam2',
-            '': None,
+        else:
+            print(f"❌ Invalid mode. Available: 'speed', 'balanced', 'accuracy'")
+    
+    def set_3d_depth_quality(self, quality: str):
+        """Set 3D depth processing quality: 'fast', 'standard', 'high'"""
+        if quality == 'fast':
+            self.depth_smoothing_algorithm = 'gaussian'
+            self.depth_temporal_smoothing = False
+            self.enable_depth_hole_filling = False
+            self.depth_noise_reduction_strength = 0.3
+            print("🚀 3D Depth Quality: FAST")
             
-            # HIGHER confidence thresholds for stable tracking
-            'confidence_horse_detection': 0.8,
-            'confidence_human_detection': 0.7,
-            'confidence_horse_pose_superanimal': 0.6,
-            'confidence_horse_pose_vitpose': 0.5,
-            'confidence_human_pose': 0.5,
-            '': None,
+        elif quality == 'standard':
+            self.depth_smoothing_algorithm = 'adaptive_gaussian'
+            self.depth_temporal_smoothing = True
+            self.depth_temporal_window = 3
+            self.enable_depth_hole_filling = True
+            self.depth_hole_filling_method = 'interpolation'
+            self.depth_noise_reduction_strength = 0.5
+            print("⚖️ 3D Depth Quality: STANDARD")
             
-            # STRICTER track stability (prevent fragmentation)
-            'track_stability_threshold': 0.6,
-            'track_newness_threshold': 8,
-            'initial_assignment_threshold': 0.6,
-            'reassignment_threshold': 0.8,
-            '': None,
+        elif quality == 'high':
+            self.depth_smoothing_algorithm = 'adaptive_gaussian'
+            self.depth_temporal_smoothing = True
+            self.depth_temporal_window = 7
+            self.enable_depth_hole_filling = True
+            self.depth_hole_filling_method = 'inpaint'
+            self.depth_edge_preservation = True
+            self.depth_noise_reduction_strength = 0.8
+            print("🎯 3D Depth Quality: HIGH")
             
-            # ENHANCED stability controls (prevent oscillation)
-            'cooling_period': 20,
-            'oscillation_threshold': 2,
-            'stability_bonus_factor': 0.3,
-            'stability_penalty_factor': 0.6,
-            '': None,
-            
-            # MOTION parameters for 35mph horses
-            'motion_distance_threshold': 400,
-            'max_motion_speed': 50.0,
-            'motion_weight': 0.35,
-            'motion_prediction_frames': 3,
-            '': None,
-            
-            # LONGER memory for occlusions
-            'samurai_memory_size': 25,
-            'memory_cleanup_interval': 75,
-            'track_expiry_frames': 150,
-            '': None,
-            
-            # QUALITY monitoring for broadcast
-            'quality_stability_window': 15,
-            'confidence_variance_threshold': 0.15,
-            'position_variance_threshold': 150,
-            '': None,
-            
-            # BYTETRACK tuning for fast objects
-            'bytetrack_track_activation_threshold': 0.7,
-            'bytetrack_lost_track_buffer': 75,
-            'bytetrack_minimum_matching_threshold': 0.7,
-            'bytetrack_minimum_consecutive_frames': 3,
-            '': None,
-            
-            # FEATURE weights optimized for horses
-            'visual_feature_weight': 0.5,
-            'motion_feature_weight': 0.35,
-            'stability_feature_weight': 0.15,
-            '': None,
-            
-            # Enhanced ReID pipeline
-            'enable_reid_pipeline': True,
-            'reid_similarity_threshold': 0.4,
-            'enable_depth_anything': True,
-            '': None,
-            
-            # Performance
-            'max_tracks_per_frame': 11,
-            'debug_logging': True,
-            'visualization_enabled': True,
-            'progress_bar_enabled': True
-        }
-        
-        try:
-            with open(filename, 'w') as f:
-                f.write("# Horse Racing Optimized Configuration\n")
-                f.write("# Tuned for 35mph horses, 120s races, broadcast cameras\n")
-                f.write("# Key optimizations:\n")
-                f.write("#   - Higher confidence thresholds (reduce false detections)\n")
-                f.write("#   - Stricter stability controls (prevent track fragmentation)\n") 
-                f.write("#   - Larger motion thresholds (handle 35mph movement)\n")
-                f.write("#   - Longer memory (handle occlusions)\n")
-                f.write("#   - Anti-oscillation controls (prevent rapid reassignments)\n\n")
-                
-                for key, value in config_data.items():
-                    if key.startswith('#') or key == '':
-                        if key:
-                            f.write(f"{key}\n")
-                        else:
-                            f.write("\n")
-                    elif value is not None:
-                        f.write(f"{key}: {value}\n")
-                        
-            print(f"✅ Horse racing config created: {filename}")
-            print(f"🎯 Key optimizations:")
-            print(f"   - Motion threshold: 400px (vs 150px default) for 35mph horses")
-            print(f"   - Cooling period: 20 frames (vs 10) to prevent oscillation")
-            print(f"   - Stability threshold: 0.6 (vs 0.4) for stable tracking")
-            print(f"   - Memory size: 25 frames (vs 15) for occlusion handling")
-            
-        except Exception as e:
-            print(f"❌ Error creating config: {e}")
+        else:
+            print(f"❌ Invalid quality. Available: 'fast', 'standard', 'high'")
     
     def print_config(self):
-        """Print current configuration with scenario analysis"""
+        """Print current configuration including 3D settings"""
         print("\n🔧 Current Configuration:")
-        print(f"   Scenario: {getattr(self, 'scenario_name', 'default')}")
-        if hasattr(self, 'expected_duration_seconds'):
-            duration = self.expected_duration_seconds
-            speed = getattr(self, 'average_speed_mph', 0)
-            print(f"   Expected: {duration}s race @ {speed}mph")
-        
-        print(f"\n🎛️ Model Pipeline:")
         print(f"   Human detector: {self.HUMAN_DETECTORS[self.human_detector]}")
         print(f"   Horse detector: {self.HORSE_DETECTORS[self.horse_detector]}")
         print(f"   Human pose: {self.HUMAN_POSE_ESTIMATORS[self.human_pose_estimator]}")
         print(f"   Horse pose: {self.HORSE_POSE_ESTIMATORS[self.horse_pose_estimator]}")
         print(f"   SAM model: {self.SAM_MODELS[self.sam_model]}")
         print(f"   Device: {self.device}")
+        print(f"   Display: {self.display}")
         
-        print(f"\n🎯 Tracking Stability:")
-        print(f"   Track stability threshold: {self.track_stability_threshold}")
-        print(f"   Cooling period: {self.cooling_period} frames")
-        print(f"   Reassignment threshold: {self.reassignment_threshold}")
-        print(f"   Motion distance threshold: {self.motion_distance_threshold}px")
+        # Enhanced ReID status
+        if getattr(self, 'enable_reid_pipeline', False):
+            print(f"\n🎯 Enhanced ReID Pipeline: ENABLED")
+            print(f"   Core Settings:")
+            print(f"   - SAM model: {getattr(self, 'sam_model', 'not set')}")
+            print(f"   - Similarity threshold: {getattr(self, 'reid_similarity_threshold', 'not set')}")
+            print(f"   - Memory size: {getattr(self, 'samurai_memory_size', 'not set')} frames")
+            
+            print(f"   Quality Monitoring:")
+            print(f"   - Stability threshold: {getattr(self, 'track_stability_threshold', 'not set')}")
+            print(f"   - Newness threshold: {getattr(self, 'track_newness_threshold', 'not set')} frames")
+            print(f"   - Stability window: {getattr(self, 'quality_stability_window', 'not set')} frames")
+            
+            print(f"   Motion Settings:")
+            print(f"   - Distance threshold: {getattr(self, 'motion_distance_threshold', 'not set')} pixels")
+            
+            print(f"   Components:")
+            print(f"   - Depth-Anything: {getattr(self, 'enable_depth_anything', 'not set')}")
+            
+        else:
+            print(f"\n🎯 Enhanced ReID Pipeline: DISABLED")
         
-        # Analyze configuration for scenario
-        if hasattr(self, 'average_speed_mph') and self.average_speed_mph > 0:
-            self._analyze_motion_parameters()
+        # 3D Pose Integration status
+        if getattr(self, 'enable_3d_poses', False):
+            print(f"\n🎯 3D Pose Integration: ENABLED")
+            print(f"   Core 3D Settings:")
+            print(f"   - Depth smoothing: {getattr(self, 'depth_smoothing_algorithm', 'not set')}")
+            print(f"   - GPU acceleration: {getattr(self, 'enable_gpu_acceleration_3d', 'not set')}")
+            print(f"   - Batch processing: {getattr(self, 'enable_batch_processing_3d', 'not set')}")
+            print(f"   - GPU batch size: {getattr(self, 'gpu_batch_size_3d', 'not set')}")
+            
+            print(f"   Quality Enhancement:")
+            print(f"   - Temporal smoothing: {getattr(self, 'depth_temporal_smoothing', 'not set')}")
+            print(f"   - Hole filling: {getattr(self, 'enable_depth_hole_filling', 'not set')}")
+            print(f"   - Edge preservation: {getattr(self, 'depth_edge_preservation', 'not set')}")
+            print(f"   - Noise reduction: {getattr(self, 'depth_noise_reduction_strength', 'not set')}")
+            
+            print(f"   Geometric Features:")
+            print(f"   - Volumetric features: {getattr(self, 'enable_volumetric_features', 'not set')}")
+            print(f"   - Spatial distribution: {getattr(self, 'enable_spatial_distribution_features', 'not set')}")
+            print(f"   - Depth gradients: {getattr(self, 'enable_depth_gradient_features', 'not set')}")
+            print(f"   - Temporal 3D: {getattr(self, 'enable_temporal_3d_features', 'not set')}")
+            
+            print(f"   ReID Feature Weights:")
+            print(f"   - Visual: {getattr(self, 'visual_feature_weight', 0):.2f}")
+            print(f"   - 3D Pose: {getattr(self, 'pose_3d_feature_weight', 0):.2f}")
+            print(f"   - Geometric: {getattr(self, 'geometric_feature_weight', 0):.2f}")
+            print(f"   - Motion: {getattr(self, 'motion_weight', 0):.2f}")
+            
+        else:
+            print(f"\n🎯 3D Pose Integration: DISABLED")
     
-    def _analyze_motion_parameters(self):
-        """Analyze if motion parameters are appropriate for scenario"""
-        speed_mph = getattr(self, 'average_speed_mph', 0)
+    def create_template_config(self, filename: str = "enhanced_3d_config_template.yaml"):
+        """Create template config with enhanced 3D pose settings"""
+        template = {
+            '# Basic Settings': None,
+            'video_path': 'inputs/your_video.mp4',
+            'output_path': None,
+            'display': False,
+            'device': 'cuda',
+            'max_frames': None,
+            
+            '# Model Selection': None,
+            'human_detector': 'rtdetr',
+            'horse_detector': 'rtdetr', 
+            'human_pose_estimator': 'vitpose',
+            'horse_pose_estimator': 'superanimal',
+            'sam_model': 'sam2',
+            
+            '# Confidence Thresholds': None,
+            'confidence_human_detection': 0.5,
+            'confidence_horse_detection': 0.5,
+            'confidence_human_pose': 0.5,
+            'confidence_horse_pose_superanimal': 0.5,
+            'confidence_horse_pose_vitpose': 0.5,
+            
+            '# Basic Settings': None,
+            'jockey_overlap_threshold': 0.4,
+            
+            '# Enhanced ReID Pipeline': None,
+            'enable_reid_pipeline': True,
+            'reid_similarity_threshold': 0.3,
+            
+            '# Track Quality Monitoring': None,
+            'track_stability_threshold': 0.4,
+            'track_newness_threshold': 5,
+            'quality_stability_window': 10,
+            
+            '# Memory and Motion': None,
+            'samurai_memory_size': 15,
+            'motion_distance_threshold': 150,
+            
+            '# Components': None,
+            'enable_depth_anything': True,
+            
+            '# 3D Pose Integration': None,
+            'enable_3d_poses': True,
+            'enable_3d_reid_features': True,
+            'enable_gpu_acceleration_3d': True,
+            'enable_batch_processing_3d': True,
+            
+            '# Depth Processing': None,
+            'depth_smoothing_algorithm': 'adaptive_gaussian',
+            'depth_smoothing_factor': 0.3,
+            'depth_temporal_smoothing': True,
+            'depth_temporal_window': 5,
+            'depth_outlier_threshold': 2.5,
+            'depth_noise_reduction_strength': 0.7,
+            
+            '# Advanced Depth Quality': None,
+            'enable_depth_hole_filling': True,
+            'depth_hole_filling_method': 'inpaint',
+            'depth_edge_preservation': True,
+            'depth_edge_threshold': 10.0,
+            
+            '# 3D Pose Quality': None,
+            'min_valid_keypoints_3d': 5,
+            'pose_3d_quality_threshold': 0.3,
+            'enable_geometric_consistency_check': True,
+            'geometric_plausibility_threshold': 0.6,
+            
+            '# 3D Geometric Features': None,
+            'enable_volumetric_features': True,
+            'enable_spatial_distribution_features': True,
+            'enable_depth_gradient_features': True,
+            'enable_pose_compactness_features': True,
+            'enable_temporal_3d_features': True,
+            
+            '# ReID Feature Weighting': None,
+            'visual_feature_weight': 0.35,
+            'pose_3d_feature_weight': 0.30,
+            'geometric_feature_weight': 0.20,
+            'motion_weight': 0.10,
+            'stability_weight': 0.05,
+            
+            '# GPU Acceleration': None,
+            'gpu_batch_size_3d': 8,
+            'enable_gpu_depth_processing': True,
+            'enable_gpu_geometric_calculations': True,
+            'gpu_memory_optimization': True,
+            
+            '# Performance Optimization': None,
+            'parallel_pose_processing': True,
+            'max_concurrent_poses': 4,
+            'enable_pose_caching': True,
+            'pose_cache_size': 50,
+            
+            '# 3D Visualization': None,
+            'depth_visualization_scale': 2.0,
+            'pose_3d_transparency': 0.7,
+            'enable_depth_color_coding': True,
+            'show_3d_pose_quality': True,
+            'depth_color_scheme': 'jet',
+            
+            '# Advanced 3D Processing': None,
+            'enable_3d_kalman_filtering': True,
+            'kalman_process_noise': 0.1,
+            'kalman_measurement_noise': 0.5,
+            'enable_temporal_pose_smoothing': True,
+            'temporal_smoothing_window': 7,
+            
+            '# Performance': None,
+            'max_tracks_per_frame': 11
+        }
         
-        if speed_mph > 0:
-            # Rough estimation: 35mph ≈ 15.6 m/s
-            # At 30fps, that's ~0.52m per frame
-            # If 1 pixel ≈ 2cm, that's ~26 pixels per frame movement
-            estimated_movement_per_frame = speed_mph * 0.74  # rough conversion
-            
-            print(f"\n📊 Motion Analysis:")
-            print(f"   Estimated movement: ~{estimated_movement_per_frame:.1f} pixels/frame")
-            print(f"   Current threshold: {self.motion_distance_threshold}px")
-            
-            if self.motion_distance_threshold < estimated_movement_per_frame * 3:
-                print(f"   ⚠️ WARNING: Motion threshold may be too low for {speed_mph}mph")
-                recommended = int(estimated_movement_per_frame * 8)
-                print(f"   💡 Recommend: motion_distance_threshold: {recommended}")
-            else:
-                print(f"   ✅ Motion threshold appropriate for scenario")
+        try:
+            with open(filename, 'w') as f:
+                f.write("# Enhanced 3D Pose Integration Configuration Template\n")
+                f.write("# Advanced ReID with 3D pose features, GPU acceleration, and depth processing\n\n")
+                
+                for key, value in template.items():
+                    if key.startswith('#'):
+                        f.write(f"\n{key}\n")
+                    elif value is not None:
+                        f.write(f"{key}: {value}\n")
+                        
+            print(f"✅ Enhanced 3D template config created: {filename}")
+        except Exception as e:
+            print(f"❌ Error creating template: {e}")

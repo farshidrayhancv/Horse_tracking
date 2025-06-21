@@ -9,7 +9,7 @@ except ImportError:
     sv = None
 
 try:
-    from transformers import AutoProcessor, RTDetrForObjectDetection
+    from transformers import AutoProcessor, RTDetrV2ForObjectDetection, RTDetrImageProcessor
     RTDETR_AVAILABLE = True
 except ImportError:
     RTDETR_AVAILABLE = False
@@ -33,8 +33,8 @@ class DetectionManager:
         if self.config.human_detector == 'rtdetr' or self.config.horse_detector in ['rtdetr', 'both']:
             if RTDETR_AVAILABLE:
                 try:
-                    self.rtdetr_processor = AutoProcessor.from_pretrained("PekingU/rtdetr_r50vd_coco_o365")
-                    self.rtdetr_detector = RTDetrForObjectDetection.from_pretrained("PekingU/rtdetr_r50vd_coco_o365")
+                    self.rtdetr_processor = RTDetrImageProcessor.from_pretrained("PekingU/rtdetr_v2_r18vd")
+                    self.rtdetr_detector = RTDetrV2ForObjectDetection.from_pretrained("PekingU/rtdetr_v2_r18vd")
                     self.rtdetr_detector.to(self.config.device)
                     print("✅ RT-DETR detector loaded")
                 except Exception as e:
