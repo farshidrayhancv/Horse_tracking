@@ -1,6 +1,6 @@
 """
-Complete 3D Enhanced main.py with GPU Acceleration, Batch Processing, and Performance Monitoring
-Final integration of all 3D pose features with comprehensive tracking and optimization
+Enhanced main.py with BoostTrack and Complete 3D Pose Integration
+REPLACE your existing main.py with this version
 """
 
 import cv2
@@ -10,9 +10,6 @@ import warnings
 import re
 import time
 from pathlib import Path
-import psutil
-import gc
-from concurrent.futures import ThreadPoolExecutor
 
 # Local imports
 from config import Config
@@ -32,107 +29,45 @@ try:
     TQDM_AVAILABLE = True
 except ImportError:
     TQDM_AVAILABLE = False
+    print("Install tqdm for progress bars: pip install tqdm")
 
 try:
     from transformers import AutoProcessor, VitPoseForPoseEstimation, RTDetrForObjectDetection
     VITPOSE_AVAILABLE = True
+    print("✓ ViTPose available")
 except ImportError:
     VITPOSE_AVAILABLE = False
+    print("⚠️ ViTPose not available - install with: pip install transformers torch")
 
 try:
     from dlclibrary import download_huggingface_model
     SUPERANIMAL_AVAILABLE = True
+    print("✓ SuperAnimal available")
 except ImportError:
     SUPERANIMAL_AVAILABLE = False
+    print("⚠️ DLClibrary not available - install with: pip install dlclibrary")
 
 try:
     import supervision as sv
-    from supervision import ByteTrack
+    print("✓ Supervision available")
 except ImportError:
+    print("❌ Supervision not available - install with: pip install supervision")
     sv = None
 
-
-class PerformanceMonitor:
-    """Real-time performance monitoring for 3D pose processing"""
-    
-    def __init__(self, config):
-        self.config = config
-        self.frame_times = []
-        self.component_times = {}
-        self.gpu_memory_usage = []
-        self.cpu_usage = []
-        self.memory_usage = []
-        
-        # Component timing
-        self.timing_contexts = {}
-        
-    def start_timing(self, component: str):
-        """Start timing a component"""
-        self.timing_contexts[component] = time.time()
-    
-    def end_timing(self, component: str) -> float:
-        """End timing and return duration"""
-        if component in self.timing_contexts:
-            duration = time.time() - self.timing_contexts[component]
-            if component not in self.component_times:
-                self.component_times[component] = []
-            self.component_times[component].append(duration)
-            return duration
-        return 0.0
-    
-    def update_system_metrics(self):
-        """Update system resource usage metrics"""
-        # CPU usage
-        cpu_percent = psutil.cpu_percent()
-        self.cpu_usage.append(cpu_percent)
-        
-        # Memory usage
-        memory = psutil.virtual_memory()
-        self.memory_usage.append(memory.used / 1024 / 1024)  # MB
-        
-        # GPU memory (if available)
-        if torch.cuda.is_available():
-            gpu_memory = torch.cuda.memory_allocated() / 1024 / 1024  # MB
-            self.gpu_memory_usage.append(gpu_memory)
-        else:
-            self.gpu_memory_usage.append(0)
-    
-    def get_performance_summary(self) -> dict:
-        """Get performance summary"""
-        summary = {
-            'avg_frame_time': np.mean(self.frame_times) if self.frame_times else 0,
-            'avg_fps': 1.0 / np.mean(self.frame_times) if self.frame_times else 0,
-            'component_times': {},
-            'resource_usage': {
-                'avg_cpu_percent': np.mean(self.cpu_usage) if self.cpu_usage else 0,
-                'avg_memory_mb': np.mean(self.memory_usage) if self.memory_usage else 0,
-                'avg_gpu_memory_mb': np.mean(self.gpu_memory_usage) if self.gpu_memory_usage else 0,
-                'peak_gpu_memory_mb': np.max(self.gpu_memory_usage) if self.gpu_memory_usage else 0
-            }
-        }
-        
-        # Component timing summary
-        for component, times in self.component_times.items():
-            summary['component_times'][component] = {
-                'avg_ms': np.mean(times) * 1000,
-                'total_ms': np.sum(times) * 1000,
-                'percentage': (np.sum(times) / np.sum(self.frame_times)) * 100 if self.frame_times else 0
-            }
-        
-        return summary
-    
-    def log_frame_time(self, frame_time: float):
-        """Log frame processing time"""
-        self.frame_times.append(frame_time)
+# Import BoostTrack instead of ByteTrack
+try:
+    from boxmot import BoostTrack
+    BOOSTTRACK_AVAILABLE = True
+    print("✓ BoostTrack available")
+except ImportError:
+    BOOSTTRACK_AVAILABLE = False
+    print("⚠️ BoostTrack not available - install with: pip install boxmot")
 
 
 class HybridPoseSystem:
     def __init__(self, video_path: str, config: Config):
         self.video_path = Path(video_path)
         self.config = config
-        
-        # Initialize performance monitor
-        self.perf_monitor = PerformanceMonitor(config)
         
         # Initialize debug logger
         self.debug_logger = TrackingDebugLogger(self.config)
@@ -152,6 +87,7 @@ class HybridPoseSystem:
         self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 25
         
         if self.total_frames <= 0:
+            print("⚠️ Warning: Frame count not available, will process until end of video")
             self.total_frames = float('inf')
         
         # Setup tracking
@@ -160,46 +96,32 @@ class HybridPoseSystem:
         # Setup models and components
         self.setup_models()
         
-        # Setup Enhanced ReID Pipeline with 3D pose integration
+        # Setup NEW Enhanced ReID Pipeline with 3D Integration
         self.reid_pipeline = None
         if getattr(self.config, 'enable_reid_pipeline', True):
             try:
-                # Add stability configuration to config object
-                self._ensure_config_completeness()
-                self.reid_pipeline = EnhancedReIDPipeline(self.config)
+                # ADD STABILITY CONFIGURATION to your config object
+                if not hasattr(self.config, 'cooling_period'):
+                    self.config.cooling_period = 10  # Frames to lock after reassignment
+                if not hasattr(self.config, 'oscillation_threshold'):
+                    self.config.oscillation_threshold = 3  # Max oscillations before penalty  
+                if not hasattr(self.config, 'initial_assignment_threshold'):
+                    self.config.initial_assignment_threshold = 0.5  # Easy initial assignment
+                if not hasattr(self.config, 'reassignment_threshold'):
+                    self.config.reassignment_threshold = 0.7  # Hard to steal existing tracks
+                    
+                self.reid_pipeline = EnhancedReIDPipeline(self.config)  # NOW WITH STABILITY + 3D
+                print("✅ Enhanced ReID Pipeline initialized with STABILITY CONTROLS + 3D POSE INTEGRATION")
             except Exception as e:
+                print(f"❌ Enhanced ReID pipeline failed to initialize: {e}")
+                print("🔄 Continuing without re-identification")
                 self.config.enable_reid_pipeline = False
-        
-        # GPU optimization
-        if getattr(self.config, 'gpu_memory_optimization', False) and torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            gc.collect()
         
         # Print configuration
         self.config.print_config()
         print(f"🎯 Expected: {self.expected_horses} horses, {self.expected_jockeys} jockeys")
-        print(f"🐴🏇 3D Enhanced Horse Tracking System ready")
-        print(f"📊 Performance monitoring: ENABLED")
-    
-    def _ensure_config_completeness(self):
-        """Ensure all required config parameters exist"""
-        defaults = {
-            'cooling_period': 10,
-            'oscillation_threshold': 3,
-            'initial_assignment_threshold': 0.5,
-            'reassignment_threshold': 0.7,
-            'enable_3d_poses': True,
-            'enable_gpu_acceleration_3d': True,
-            'enable_batch_processing_3d': True,
-            'depth_smoothing_algorithm': 'adaptive_gaussian',
-            'gpu_batch_size_3d': 8,
-            'parallel_pose_processing': True,
-            'max_concurrent_poses': 4
-        }
-        
-        for key, value in defaults.items():
-            if not hasattr(self.config, key):
-                setattr(self.config, key, value)
+        print(f"🐴🏇 Enhanced Horse Tracking System ready: {self.total_frames} frames @ {self.fps} FPS")
+        print(f"📊 Debug logging enabled - logs will be saved at end of inference")
     
     def parse_filename_counts(self):
         """Parse filename to extract expected horse/jockey counts"""
@@ -209,33 +131,50 @@ class HybridPoseSystem:
         match = re.search(r'horse_(\d+)', filename, re.IGNORECASE)
         if match:
             count = int(match.group(1))
-            return count, count
+            return count, count  # Same number of horses and jockeys
         
+        # Default fallback
+        print(f"⚠️ Could not parse count from filename '{filename}', using defaults")
         return 10, 10  # Default to 10 horses, 10 jockeys
     
     def setup_trackers(self):
-        """Initialize ByteTracks for horses and humans"""
-        if not sv:
+        """Initialize BoostTrack for horses and humans"""
+        if not BOOSTTRACK_AVAILABLE:
+            print("❌ Tracking disabled - BoostTrack not available")
             self.horse_tracker = None
             self.human_tracker = None
             return
         
-        # Initialize trackers with video FPS
-        self.horse_tracker = ByteTrack(
-            frame_rate=int(self.fps),
-            track_activation_threshold=0.6,
-            lost_track_buffer=50,
-            minimum_matching_threshold=0.6,
-            minimum_consecutive_frames=5,
-        )
-
-        self.human_tracker = ByteTrack(
-            frame_rate=int(self.fps),
-            track_activation_threshold=0.6,
-            lost_track_buffer=50,
-            minimum_matching_threshold=0.6,
-            minimum_consecutive_frames=5,
-        )
+        # Setup ReID model path
+        reid_model_name = "osnet_x0_25_msmt17.pt"
+        reid_model_path = Path(reid_model_name)
+        
+        # BoostTrack configuration based on your paste.txt
+        boosttrack_config = {
+            'reid_weights': reid_model_path,
+            'half': False,
+            'device': 0 if torch.cuda.is_available() else 'cpu',
+            'with_reid': True,
+            'use_rich_s': True,
+            'use_sb': True,
+            'use_vt': True,
+        }
+        
+        try:
+            # Initialize trackers with BoostTrack
+            self.horse_tracker = BoostTrack(**boosttrack_config)
+            self.human_tracker = BoostTrack(**boosttrack_config)
+            
+            print(f"✅ BoostTrack initialized @ {self.fps} FPS")
+            print(f"   ReID weights: {reid_model_name}")
+            print(f"   Device: {boosttrack_config['device']}")
+            print(f"   Features: ReID={boosttrack_config['with_reid']}, Rich-S={boosttrack_config['use_rich_s']}")
+            
+        except Exception as e:
+            print(f"❌ BoostTrack initialization failed: {e}")
+            print("🔄 Falling back to simple tracking")
+            self.horse_tracker = None
+            self.human_tracker = None
     
     def setup_models(self):
         # Setup SuperAnimal model if needed
@@ -251,6 +190,56 @@ class HybridPoseSystem:
         
         # Setup visualizer
         self.visualizer = Visualizer(self.config, self.superanimal)
+    
+    def convert_sv_to_boosttrack_format(self, detections):
+        """Convert supervision Detections to BoostTrack input format"""
+        if not sv or len(detections) == 0:
+            return np.empty((0, 6))
+        
+        # BoostTrack expects format: [x1, y1, x2, y2, confidence, class_id]
+        boosttrack_format = []
+        
+        for i in range(len(detections)):
+            x1, y1, x2, y2 = detections.xyxy[i]
+            confidence = detections.confidence[i] if hasattr(detections, 'confidence') else 0.8
+            class_id = detections.class_id[i] if hasattr(detections, 'class_id') else 0
+            
+            boosttrack_format.append([x1, y1, x2, y2, confidence, class_id])
+        
+        return np.array(boosttrack_format)
+    
+    def convert_boosttrack_to_sv_format(self, tracks, original_detections):
+        """Convert BoostTrack output to supervision Detections format"""
+        if not sv or tracks is None or len(tracks) == 0:
+            return sv.Detections.empty() if sv else original_detections
+        
+        # BoostTrack returns format: [x1, y1, x2, y2, track_id, confidence, class_id, ...]
+        tracked_boxes = []
+        tracked_confidences = []
+        tracked_class_ids = []
+        tracked_ids = []
+        
+        for track in tracks:
+            if len(track) >= 5:
+                x1, y1, x2, y2, track_id = track[:5]
+                confidence = track[5] if len(track) > 5 else 0.8
+                class_id = track[6] if len(track) > 6 else 0
+                
+                tracked_boxes.append([x1, y1, x2, y2])
+                tracked_confidences.append(confidence)
+                tracked_class_ids.append(int(class_id))
+                tracked_ids.append(int(track_id))
+        
+        if tracked_boxes:
+            tracked_detections = sv.Detections(
+                xyxy=np.array(tracked_boxes),
+                confidence=np.array(tracked_confidences),
+                class_id=np.array(tracked_class_ids),
+                tracker_id=np.array(tracked_ids)
+            )
+            return tracked_detections
+        else:
+            return sv.Detections.empty()
     
     def limit_detections(self, detections, max_count, detection_type="object"):
         """Limit detections to expected count, keeping highest confidence ones"""
@@ -272,6 +261,30 @@ class HybridPoseSystem:
         
         return limited_detections
     
+    def track_with_boosttrack(self, detections, tracker, frame):
+        """Track detections using BoostTrack"""
+        if not tracker or not sv or len(detections) == 0:
+            return detections
+        
+        try:
+            # Convert to BoostTrack format
+            boosttrack_input = self.convert_sv_to_boosttrack_format(detections)
+            
+            if len(boosttrack_input) == 0:
+                return sv.Detections.empty()
+            
+            # Track with BoostTrack
+            tracks = tracker.update(boosttrack_input, frame)
+            
+            # Convert back to supervision format
+            tracked_detections = self.convert_boosttrack_to_sv_format(tracks, detections)
+            
+            return tracked_detections
+            
+        except Exception as e:
+            print(f"⚠️ BoostTrack error: {e}")
+            return detections  # Return original detections if tracking fails
+    
     def visualize_motion_predictions(self, frame, tracking_info):
         """Visualize motion predictions"""
         if not tracking_info:
@@ -285,44 +298,6 @@ class HybridPoseSystem:
                 cv2.drawMarker(frame, center, (0, 255, 255), cv2.MARKER_CROSS, 15, 2)
                 cv2.putText(frame, f"P{track_id}", (center[0]+10, center[1]), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-        
-        return frame
-    
-    def visualize_3d_pose_info(self, frame, poses_3d, tracking_info, perf_summary):
-        """Enhanced 3D pose information overlay with performance metrics"""
-        if not poses_3d:
-            return frame
-        
-        # Count 3D pose statistics
-        total_3d_poses = len(poses_3d)
-        valid_3d_poses = len([p for p in poses_3d if p and p.get('confidence_3d', 0) > 0.3])
-        avg_3d_quality = np.mean([p.get('confidence_3d', 0) for p in poses_3d if p]) if poses_3d else 0
-        
-        # 3D pose improvements from ReID
-        pose_3d_improvements = tracking_info.get('pose_3d_improvements', 0) if tracking_info else 0
-        
-        # Performance metrics
-        avg_fps = perf_summary.get('avg_fps', 0)
-        gpu_memory = perf_summary.get('resource_usage', {}).get('avg_gpu_memory_mb', 0)
-        
-        # Draw enhanced 3D pose info overlay (top-left corner)
-        info_lines = [
-            f"3D Pose Integration: {total_3d_poses} poses",
-            f"Valid 3D: {valid_3d_poses} (>{0.3:.1f} quality)",
-            f"Avg 3D Quality: {avg_3d_quality:.3f}",
-            f"ReID 3D Improvements: {pose_3d_improvements}",
-            f"Performance: {avg_fps:.1f} FPS",
-            f"GPU Memory: {gpu_memory:.0f} MB"
-        ]
-        
-        # Semi-transparent background for 3D info
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (10, 10), (450, 10 + len(info_lines) * 25), (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
-        
-        for i, line in enumerate(info_lines):
-            y_pos = 30 + i * 25
-            cv2.putText(frame, line, (15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
         
         return frame
     
@@ -395,14 +370,54 @@ class HybridPoseSystem:
         
         return poses
     
-    def process_video_with_parallel_execution(self):
-        """Process video with parallel execution for optimal performance"""
+    def visualize_3d_poses(self, frame, poses_3d):
+        """Visualize 3D pose information"""
+        if not poses_3d:
+            return frame
+        
+        # Draw 3D pose indicators
+        for pose_3d in poses_3d:
+            if 'keypoints_3d' not in pose_3d:
+                continue
+                
+            keypoints_3d = pose_3d['keypoints_3d']
+            track_id = pose_3d.get('track_id', -1)
+            
+            # Count valid 3D keypoints
+            valid_3d_count = sum(1 for kp in keypoints_3d if kp[3] > 0)
+            
+            if valid_3d_count > 5:  # Only show if we have enough 3D points
+                # Find a good position to display 3D info
+                valid_kps = keypoints_3d[keypoints_3d[:, 3] > 0]
+                if len(valid_kps) > 0:
+                    # Use centroid of valid 3D keypoints projected to 2D
+                    centroid_2d = np.mean(valid_kps[:, :2], axis=0)
+                    text_pos = (int(centroid_2d[0]), int(centroid_2d[1]) - 30)
+                    
+                    # Draw 3D indicator
+                    cv2.putText(frame, f"3D:{valid_3d_count}kp", text_pos, 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                    
+                    # Draw depth range indicator
+                    depth_values = valid_kps[:, 2]
+                    avg_depth = np.mean(depth_values)
+                    cv2.putText(frame, f"D:{avg_depth:.1f}", 
+                               (text_pos[0], text_pos[1] + 15), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+        
+        return frame
+    
+    def process_video(self):
         # Determine output path
         if self.config.output_path:
             output_path = self.config.output_path
         else:
+            # Create safe output filename
             input_stem = self.video_path.stem if self.video_path.suffix else self.video_path.name
-            output_path = str(self.video_path.parent / f"{input_stem}_3d_gpu_enhanced_output.mp4")
+            output_path = str(self.video_path.parent / f"{input_stem}_boosttrack_3d_output.mp4")
+        
+        print(f"🎬 Processing: {self.video_path}")
+        print(f"📤 Output: {output_path}")
         
         # Setup video writer
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -415,148 +430,125 @@ class HybridPoseSystem:
         stats = {
             'humans_detected': 0, 'horses_detected': 0,
             'human_poses': 0, 'horse_poses': 0,
-            'human_poses_3d': 0, 'horse_poses_3d': 0,
             'superanimal_wins': 0, 'vitpose_wins': 0,
             'tracked_horses': 0, 'tracked_humans': 0,
             'active_horse_tracks': set(), 'active_human_tracks': set(),
-            'reid_reassignments': 0, 'reid_3d_improvements': 0,
-            'avg_3d_quality': 0.0, 'gpu_batches_processed': 0,
-            'parallel_operations': 0
+            'reid_reassignments': 0,
+            'poses_3d_generated': 0, 'enhanced_features': 0  # NEW: 3D stats
         }
         
-        # Initialize progress bar with enhanced information
+        # Initialize progress bar (only if not displaying)
         if TQDM_AVAILABLE and not self.config.display and self.total_frames != float('inf'):
-            pbar = tqdm(total=max_frames, desc="GPU-Accelerated 3D Processing", 
+            pbar = tqdm(total=max_frames, desc="Processing with BoostTrack + 3D ReID", 
                        bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}')
         else:
             pbar = None
         
         # Setup display window
         if self.config.display:
-            window_name = "GPU-Accelerated 3D Enhanced Horse Racing System"
+            window_name = "BoostTrack + 3D Horse Racing System"
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
             display_width = min(1200, self.width)
             display_height = int(self.height * (display_width / self.width))
             cv2.resizeWindow(window_name, display_width, display_height)
 
-        # Thread pool for parallel processing
-        max_workers = getattr(self.config, 'max_concurrent_poses', 4)
-        executor = ThreadPoolExecutor(max_workers=max_workers) if getattr(self.config, 'parallel_pose_processing', False) else None
-
+        initial_frame = 0
         while frame_count < max_frames:
             ret, frame = self.cap.read()
             if not ret:
                 break
+
+            if frame_count < initial_frame:
+                # Skip initial frames for warm-up
+                frame_count += 1
+                continue 
             
             # LOG: Frame start
             frame_start_time = time.time()
             self.debug_logger.log_frame_start(frame_count, frame.shape)
-            self.perf_monitor.start_timing('total_frame')
             
-            # STEP 1: Detect objects with timing
-            self.perf_monitor.start_timing('detection')
+            # STEP 1: Detect objects
             human_detections = self.detection_manager.detect_humans(frame)
             horse_detections = self.detection_manager.detect_horses(frame)
-            detection_time = self.perf_monitor.end_timing('detection')
             
             # LOG: Detections
             detection_method = f"H:{self.config.human_detector}/Ho:{self.config.horse_detector}"
-            self.debug_logger.log_detections(human_detections, horse_detections, detection_method, detection_time)
+            self.debug_logger.log_detections(human_detections, horse_detections, detection_method)
             
             # STEP 2: Limit detections to expected counts
             human_detections = self.limit_detections(human_detections, self.expected_jockeys, "jockeys")
             horse_detections = self.limit_detections(horse_detections, self.expected_horses, "horses")
             
-            # STEP 3: Track detections with timing
-            self.perf_monitor.start_timing('tracking')
-            if sv and self.horse_tracker and self.human_tracker:
-                tracked_horses = self.horse_tracker.update_with_detections(horse_detections)
-                tracked_humans = self.human_tracker.update_with_detections(human_detections)
+            # STEP 3: Track detections with BoostTrack
+            if self.horse_tracker and self.human_tracker:
+                tracked_horses = self.track_with_boosttrack(horse_detections, self.horse_tracker, frame)
+                tracked_humans = self.track_with_boosttrack(human_detections, self.human_tracker, frame)
+                
+                # LOG: Tracking updates
+                self.debug_logger.log_tracking_update(tracked_humans, tracked_horses, "BoostTrack")
                 
                 # Update tracking stats
-                if len(tracked_horses) > 0:
+                if hasattr(tracked_horses, 'tracker_id') and len(tracked_horses) > 0:
                     stats['active_horse_tracks'].update(tracked_horses.tracker_id)
-                if len(tracked_humans) > 0:
+                if hasattr(tracked_humans, 'tracker_id') and len(tracked_humans) > 0:
                     stats['active_human_tracks'].update(tracked_humans.tracker_id)
             else:
                 tracked_horses = horse_detections
                 tracked_humans = human_detections
-            tracking_time = self.perf_monitor.end_timing('tracking')
             
-            # LOG: Tracking updates
-            self.debug_logger.log_tracking_update(tracked_humans, tracked_horses, "ByteTrack", tracking_time)
-            
-            # Filter humans to jockeys only
+            # Filter humans to jockeys only (using tracked detections)
             if sv:
                 jockey_detections = self.detection_manager.filter_jockeys(tracked_humans, tracked_horses)
             else:
                 jockey_detections = tracked_humans
             
-            # STEP 4: Apply Enhanced ReID Pipeline with timing
-            self.perf_monitor.start_timing('reid')
+            # STEP 4: Estimate poses BEFORE ReID processing (NEW: Required for 3D integration)
+            human_poses = self.pose_manager.estimate_human_poses(frame, jockey_detections)
+            horse_poses = self.pose_manager.estimate_horse_poses(frame, tracked_horses)
+            
+            # Associate poses with track IDs
+            human_poses = self.associate_poses_with_tracks(human_poses, jockey_detections)
+            horse_poses = self.associate_poses_with_tracks(horse_poses, tracked_horses)
+            
+            # LOG: Pose estimation
+            self.debug_logger.log_pose_estimation(human_poses, horse_poses)
+            
+            # STEP 5: Apply Enhanced ReID Pipeline WITH 3D POSE INTEGRATION
             tracking_info = {}
-            depth_map = None
+            poses_3d = []
             
             if self.reid_pipeline and getattr(self.config, 'enable_reid_pipeline', False):
-                # Process horses with Enhanced ReID
+                # Process horses with Enhanced ReID + 3D
                 horse_rgb_crops, horse_depth_crops, depth_map, horse_reid_features, horse_depth_stats = self.reid_pipeline.process_frame(frame, tracked_horses)
+                
+                # LOG: Depth processing
+                self.debug_logger.log_depth_processing(depth_map, horse_depth_stats)
+                
+                # NEW: Apply intelligent track assignment WITH 3D POSE DATA
+                tracked_horses_enhanced = self.reid_pipeline.enhance_tracking(
+                    tracked_horses, horse_reid_features, horse_depth_stats, horse_poses  # ← NEW: Pass poses_2d
+                )
                 
                 # Process jockeys with standard pipeline
                 jockey_rgb_crops, jockey_depth_crops, _, jockey_reid_features, jockey_depth_stats = self.reid_pipeline.process_frame(frame, jockey_detections)
-                
-                # LOG: Depth processing
-                self.debug_logger.log_depth_processing(depth_map, horse_depth_stats, self.perf_monitor.end_timing('reid'))
-            
-            # STEP 5: GPU-Accelerated 3D Pose Estimation with timing
-            self.perf_monitor.start_timing('pose_estimation_3d')
-            
-            if getattr(self.config, 'enable_batch_processing_3d', False) and executor:
-                # Parallel pose estimation
-                stats['parallel_operations'] += 1
-                
-                # Submit parallel tasks
-                future_human_poses = executor.submit(
-                    self.pose_manager.estimate_human_poses, frame, jockey_detections, depth_map
-                )
-                future_horse_poses = executor.submit(
-                    self.pose_manager.estimate_horse_poses, frame, tracked_horses, depth_map
-                )
-                
-                # Get results
-                human_poses_3d = future_human_poses.result()
-                horse_poses_3d = future_horse_poses.result()
-            else:
-                # Sequential pose estimation
-                human_poses_3d = self.pose_manager.estimate_human_poses(frame, jockey_detections, depth_map)
-                horse_poses_3d = self.pose_manager.estimate_horse_poses(frame, tracked_horses, depth_map)
-            
-            pose_3d_time = self.perf_monitor.end_timing('pose_estimation_3d')
-            
-            # Count GPU batches
-            if horse_poses_3d and any('pose_3d_features' in pose for pose in horse_poses_3d if pose):
-                stats['gpu_batches_processed'] += 1
-            
-            # Apply intelligent track assignment with 3D pose features
-            if self.reid_pipeline and getattr(self.config, 'enable_reid_pipeline', False):
-                self.perf_monitor.start_timing('reid_3d')
-                
-                tracked_horses_enhanced = self.reid_pipeline.enhance_tracking(
-                    tracked_horses, horse_reid_features, horse_depth_stats, horse_poses_3d)
                 jockey_detections_enhanced = self.reid_pipeline.enhance_tracking(
-                    jockey_detections, jockey_reid_features, jockey_depth_stats, human_poses_3d)
+                    jockey_detections, jockey_reid_features, jockey_depth_stats, human_poses  # ← NEW: Pass poses_2d
+                )
                 
-                # Get tracking information
+                # Get tracking information with 3D stats
                 tracking_info = self.reid_pipeline.get_tracking_info()
                 stats['reid_reassignments'] = self.reid_pipeline.get_reassignment_count()
-                stats['reid_3d_improvements'] = self.reid_pipeline.get_3d_improvements_count()
                 
-                reid_3d_time = self.perf_monitor.end_timing('reid_3d')
+                # NEW: Get 3D poses from ReID pipeline
+                poses_3d = self.reid_pipeline.get_current_poses_3d()
+                stats['poses_3d_generated'] = len(poses_3d)
+                stats['enhanced_features'] = tracking_info.get('current_3d_poses', 0)
                 
-                # LOG: ReID process
+                # LOG: ReID process with 3D integration
                 similarity_scores = {}
                 assignments = {}
                 untracked_count = 0
-                self.debug_logger.log_reid_process(horse_reid_features, similarity_scores, assignments, untracked_count, reid_3d_time, stats['reid_3d_improvements'])
+                self.debug_logger.log_reid_process(horse_reid_features, similarity_scores, assignments, untracked_count)
                 
                 # LOG: Enhanced tracking
                 self.debug_logger.log_samurai_tracking(tracking_info, [])
@@ -564,91 +556,69 @@ class HybridPoseSystem:
                 # Update detections with enhanced tracking
                 tracked_horses = tracked_horses_enhanced
                 jockey_detections = jockey_detections_enhanced
+                
+                print(f"🎯 3D Integration: Generated {len(poses_3d)} 3D poses with enhanced ReID features")
             
-            # Update statistics
             stats['humans_detected'] += len(jockey_detections) if sv else len(jockey_detections)
             stats['horses_detected'] += len(tracked_horses) if sv else len(tracked_horses)
             stats['tracked_horses'] = len(stats['active_horse_tracks'])
             stats['tracked_humans'] = len(stats['active_human_tracks'])
-            
-            # LOG: Pose estimation
-            self.debug_logger.log_pose_estimation(human_poses_3d, horse_poses_3d, pose_3d_time)
-            
-            # STEP 6: Associate poses with track IDs
-            human_poses_3d = self.associate_poses_with_tracks(human_poses_3d, jockey_detections)
-            horse_poses_3d = self.associate_poses_with_tracks(horse_poses_3d, tracked_horses)
-            
-            # Update pose statistics
-            stats['human_poses'] += len(human_poses_3d)
-            stats['horse_poses'] += len(horse_poses_3d)
-            stats['human_poses_3d'] += len([p for p in human_poses_3d if p and 'keypoints_3d' in p])
-            stats['horse_poses_3d'] += len([p for p in horse_poses_3d if p and 'keypoints_3d' in p])
-            
-            # Calculate average 3D quality
-            all_3d_poses = [p for p in human_poses_3d + horse_poses_3d if p and 'confidence_3d' in p]
-            if all_3d_poses:
-                stats['avg_3d_quality'] = np.mean([p['confidence_3d'] for p in all_3d_poses])
+            stats['human_poses'] += len(human_poses)
+            stats['horse_poses'] += len(horse_poses)
             
             # Count method wins for dual mode
             if self.config.horse_pose_estimator == 'dual':
-                superanimal_count = sum(1 for pose in horse_poses_3d if pose and pose.get('method') == 'SuperAnimal')
-                vitpose_count = sum(1 for pose in horse_poses_3d if pose and pose.get('method') == 'ViTPose')
+                superanimal_count = sum(1 for pose in horse_poses if pose.get('method') == 'SuperAnimal')
+                vitpose_count = sum(1 for pose in horse_poses if pose.get('method') == 'ViTPose')
                 stats['superanimal_wins'] += superanimal_count
                 stats['vitpose_wins'] += vitpose_count
             
-            # STEP 7: Enhanced Visualization with timing
-            self.perf_monitor.start_timing('visualization')
-            
+            # STEP 6: Visualize everything including 3D poses
             frame = self.visualizer.annotate_detections_with_tracking(frame, jockey_detections, tracked_horses)
             
-            # Draw 3D poses with track IDs
-            for pose_result in human_poses_3d:
-                if pose_result:
-                    frame = self.visualizer.draw_human_pose_with_tracking(frame, pose_result)
+            # Draw poses with track IDs
+            for pose_result in human_poses:
+                frame = self.visualizer.draw_human_pose_with_tracking(frame, pose_result)
             
-            for pose_result in horse_poses_3d:
-                if pose_result:
-                    frame = self.visualizer.draw_horse_pose_with_tracking(frame, pose_result)
+            for pose_result in horse_poses:
+                frame = self.visualizer.draw_horse_pose_with_tracking(frame, pose_result)
             
             # Add pose method labels
-            frame = self.visualizer.draw_pose_labels(frame, [p for p in horse_poses_3d if p])
+            frame = self.visualizer.draw_pose_labels(frame, horse_poses)
             
-            # STEP 8: Add motion prediction visualizations
+            # NEW: Visualize 3D pose information
+            frame = self.visualize_3d_poses(frame, poses_3d)
+            
+            # STEP 7: Add motion prediction visualizations
             frame = self.visualize_motion_predictions(frame, tracking_info)
-            
-            # STEP 9: Add enhanced 3D pose and performance information
-            perf_summary = self.perf_monitor.get_performance_summary()
-            frame = self.visualize_3d_pose_info(frame, horse_poses_3d + human_poses_3d, tracking_info, perf_summary)
             
             # Add enhanced depth and segmentation visualization
             if self.reid_pipeline and getattr(self.config, 'enable_reid_pipeline', False):
                 # Get segmentation masks for visualization
                 segmentation_masks = self.reid_pipeline.get_current_masks()
+                depth_map = getattr(self.reid_pipeline, '_last_depth_map', None)
                 
                 if depth_map is not None:
                     # Create depth visualization with highlighted horse masks (top right)
                     depth_with_masks = self.visualize_depth_with_masks(depth_map, segmentation_masks, tracked_horses)
                     depth_display = cv2.resize(depth_with_masks, (300, 200))
                     frame[10:210, self.width-310:self.width-10] = depth_display
-                    cv2.putText(frame, "GPU 3D Enhanced Depth", (self.width-300, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
-                    cv2.putText(frame, f"Batches: {stats['gpu_batches_processed']}", (self.width-300, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255,255,255), 1)
+                    cv2.putText(frame, "Enhanced Depth + Masks", (self.width-300, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+                    cv2.putText(frame, f"ReID: {stats['reid_reassignments']} | 3D: {stats['poses_3d_generated']}", (self.width-300, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255,255,255), 1)
                     
-                    # Create 3D depth visualization (bottom left)
-                    if all_3d_poses:
-                        depth_3d_viz = self.visualizer.create_3d_pose_depth_visualization(all_3d_poses, frame.shape)
-                        depth_3d_display = cv2.resize(depth_3d_viz, (300, 200))
-                        frame[self.height-210:self.height-10, 10:310] = depth_3d_display
-                        cv2.putText(frame, "3D Pose Depth Distribution", (20, self.height-220), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+                    # Create segmentation masks only visualization (bottom left)
+                    masks_only = self.visualize_segmentation_masks(segmentation_masks, tracked_horses, frame.shape)
+                    masks_display = cv2.resize(masks_only, (300, 200))
+                    frame[self.height-210:self.height-10, 10:310] = masks_display
+                    cv2.putText(frame, "3D-Enhanced Features", (20, self.height-220), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
             
-            visualization_time = self.perf_monitor.end_timing('visualization')
-            
-            # Add comprehensive info overlay
+            # Add info overlay
             human_count = len(jockey_detections) if sv else len(jockey_detections)
             horse_count = len(tracked_horses) if sv else len(tracked_horses)
             
-            frame = self.draw_comprehensive_info_overlay(
+            frame = self.draw_enhanced_info_overlay(
                 frame, frame_count, max_frames, human_count, horse_count,
-                len(human_poses_3d), len(horse_poses_3d), stats, tracking_info, perf_summary,
+                len(human_poses), len(horse_poses), stats, tracking_info,
                 self.expected_horses, self.expected_jockeys
             )
             
@@ -663,50 +633,27 @@ class HybridPoseSystem:
                 key = cv2.waitKey(1 if not paused else 0) & 0xFF
                 
                 if key == ord('q') or key == 27:  # Q or ESC
+                    print("\n🛑 User requested quit")
                     break
                 elif key == ord(' '):  # SPACE
                     paused = not paused
+                    print(f"{'⏸️ Paused' if paused else '▶️ Resumed'}")
                 elif paused and key != 255:  # Any other key when paused
                     pass  # Continue to next frame
             
             frame_count += 1
             
-            # LOG: Frame end and update performance monitoring
+            # LOG: Frame end
             frame_end_time = time.time()
-            total_frame_time = self.perf_monitor.end_timing('total_frame')
-            self.debug_logger.log_frame_end(total_frame_time)
-            self.perf_monitor.log_frame_time(total_frame_time)
-            self.perf_monitor.update_system_metrics()
+            self.debug_logger.log_frame_end(frame_end_time - frame_start_time)
             
-            # Log performance metrics to debug logger
-            if torch.cuda.is_available():
-                gpu_memory_mb = torch.cuda.memory_allocated() / 1024 / 1024
-            else:
-                gpu_memory_mb = 0
-            frame_rate = 1.0 / total_frame_time if total_frame_time > 0 else 0
-            self.debug_logger.log_performance_metrics(gpu_memory_mb, frame_rate)
-            
-            # Update progress bar with comprehensive information
+            # Update progress bar
             if pbar:
-                pose_3d_status = f"3D:{stats['horse_poses_3d']+stats['human_poses_3d']}"
-                quality_status = f"Q:{stats['avg_3d_quality']:.2f}"
-                perf_status = f"FPS:{frame_rate:.1f}"
-                gpu_status = f"GPU:{gpu_memory_mb:.0f}MB"
-                batch_status = f"Batch:{stats['gpu_batches_processed']}"
-                parallel_status = f"||:{stats['parallel_operations']}" if executor else ""
-                reid_3d_status = f"3D-ReID:{stats['reid_3d_improvements']}"
-                
-                pbar.set_postfix_str(f"H:{human_count}/{self.expected_jockeys} Ho:{horse_count}/{self.expected_horses} {pose_3d_status} {quality_status} {perf_status} {gpu_status} {batch_status} {parallel_status} {reid_3d_status}")
+                enhanced_status = f"Enhanced:{tracking_info.get('active_tracks', 0)}T" if tracking_info else "Enhanced:OFF"
+                reid_status = f"ReID:{stats['reid_reassignments']}" if getattr(self.config, 'enable_reid_pipeline', False) else "ReID:OFF"
+                pose_3d_status = f"3D:{stats['poses_3d_generated']}"
+                pbar.set_postfix_str(f"H:{human_count}/{self.expected_jockeys} Ho:{horse_count}/{self.expected_horses} {enhanced_status} {reid_status} {pose_3d_status}")
                 pbar.update(1)
-            
-            # Periodic GPU memory cleanup
-            if frame_count % 100 == 0 and getattr(self.config, 'gpu_memory_optimization', False):
-                torch.cuda.empty_cache()
-                gc.collect()
-        
-        # Cleanup
-        if executor:
-            executor.shutdown(wait=True)
         
         self.cap.release()
         out.release()
@@ -717,19 +664,47 @@ class HybridPoseSystem:
         if pbar:
             pbar.close()
         
-        # Final performance summary
-        final_perf_summary = self.perf_monitor.get_performance_summary()
-        
-        # SAVE ALL DEBUG LOGS with performance data
+        # SAVE ALL DEBUG LOGS
+        print(f"📊 Saving comprehensive debug logs...")
         log_files = self.debug_logger.save_logs(output_path)
         
-        return output_path, final_perf_summary
+        print(f"✅ Enhanced processing complete!")
+        print(f"📊 Final Stats:")
+        print(f"   Expected: {self.expected_horses} horses, {self.expected_jockeys} jockeys")
+        print(f"   Humans detected: {stats['humans_detected']}")
+        print(f"   Horses detected: {stats['horses_detected']}")
+        print(f"   Human poses: {stats['human_poses']}")
+        print(f"   Horse poses: {stats['horse_poses']}")
+        print(f"   🚀 Unique tracks: {stats['tracked_humans']} humans, {stats['tracked_horses']} horses (BoostTrack)")
+        
+        if getattr(self.config, 'enable_reid_pipeline', False):
+            print(f"🎯 Enhanced ReID + 3D Tracking:")
+            if tracking_info:
+                print(f"   - Active tracks: {tracking_info.get('active_tracks', 0)}")
+                print(f"   - Intelligent reassignments: {stats['reid_reassignments']}")
+                print(f"   - 3D poses generated: {stats['poses_3d_generated']}")
+                print(f"   - Enhanced features: {stats['enhanced_features']}")
+                print(f"   - Quality-based monitoring: ✅")
+                sam_model = getattr(self.config, 'sam_model', 'none')
+                print(f"   - SAM segmentation: {sam_model.upper()}")
+                print(f"   - Motion prediction: ✅")
+                print(f"   - 3D geometric features: ✅")
+            print(f"   - Features: Quality monitoring + 3D pose integration + Intelligent assignment")
+        
+        if self.config.horse_pose_estimator == 'dual':
+            print(f"🥊 Competition Results:")
+            print(f"   SuperAnimal wins: {stats['superanimal_wins']} (39 keypoints)")
+            print(f"   ViTPose wins: {stats['vitpose_wins']} (17 keypoints)")
+        
+        print(f"🎯 Output: {output_path}")
+        
+        return output_path
     
-    def draw_comprehensive_info_overlay(self, frame: np.ndarray, frame_count: int, max_frames: int, 
-                                       human_count: int, horse_count: int, human_poses: int, 
-                                       horse_poses: int, stats: dict, tracking_info: dict, perf_summary: dict,
-                                       expected_horses: int = 10, expected_jockeys: int = 10):
-        """Draw comprehensive info overlay with 3D pose, performance, and GPU metrics"""
+    def draw_enhanced_info_overlay(self, frame: np.ndarray, frame_count: int, max_frames: int, 
+                                 human_count: int, horse_count: int, human_poses: int, 
+                                 horse_poses: int, stats: dict = None, tracking_info: dict = None,
+                                 expected_horses: int = 10, expected_jockeys: int = 10):
+        """Draw enhanced info overlay with BoostTrack + 3D statistics"""
         total_display = str(max_frames) if max_frames != float('inf') else "∞"
         
         info_lines = [
@@ -738,70 +713,42 @@ class HybridPoseSystem:
             f"Config: H-Det:{self.config.human_detector} H-Pose:{self.config.human_pose_estimator}",
             f"        Horse-Det:{self.config.horse_detector} Horse-Pose:{self.config.horse_pose_estimator}",
             f"Detected - Jockeys:{human_count}/{expected_jockeys} Horses:{horse_count}/{expected_horses}",
-            f"2D Poses - Humans:{human_poses} Horses:{horse_poses}",
+            f"Poses - Humans:{human_poses} Horses:{horse_poses}",
         ]
         
-        # Add 3D pose and performance statistics
+        # Add tracking statistics
         if stats:
             tracked_humans = stats.get('tracked_humans', 0)
             tracked_horses = stats.get('tracked_horses', 0)
-            poses_3d_total = stats.get('human_poses_3d', 0) + stats.get('horse_poses_3d', 0)
-            avg_3d_quality = stats.get('avg_3d_quality', 0)
-            gpu_batches = stats.get('gpu_batches_processed', 0)
-            parallel_ops = stats.get('parallel_operations', 0)
-            
-            info_lines.append(f"🔄 Unique Tracks - Humans:{tracked_humans} Horses:{tracked_horses}")
-            info_lines.append(f"🎯 3D Poses: {poses_3d_total} (Avg Quality: {avg_3d_quality:.3f})")
-            info_lines.append(f"🚀 GPU Processing: {gpu_batches} batches, {parallel_ops} parallel ops")
+            info_lines.append(f"🚀 BoostTrack - Humans:{tracked_humans} Horses:{tracked_horses} (ReID enabled)")
         
-        # Add performance metrics
-        if perf_summary:
-            avg_fps = perf_summary.get('avg_fps', 0)
-            resource_usage = perf_summary.get('resource_usage', {})
-            gpu_memory = resource_usage.get('avg_gpu_memory_mb', 0)
-            cpu_usage = resource_usage.get('avg_cpu_percent', 0)
-            
-            info_lines.append(f"⚡ Performance: {avg_fps:.1f} FPS, GPU:{gpu_memory:.0f}MB, CPU:{cpu_usage:.0f}%")
-            
-            # Component timing breakdown
-            component_times = perf_summary.get('component_times', {})
-            if component_times:
-                bottleneck = max(component_times.items(), key=lambda x: x[1].get('percentage', 0))
-                info_lines.append(f"   Bottleneck: {bottleneck[0]} ({bottleneck[1].get('percentage', 0):.1f}%)")
-        
-        # Add Enhanced ReID info with 3D integration
+        # Add Enhanced ReID + 3D info
         if getattr(self.config, 'enable_reid_pipeline', False) and tracking_info:
             sam_model_display = getattr(self.config, 'sam_model', 'none').upper()
-            info_lines.append(f"🎯 GPU-Accelerated 3D ReID: {sam_model_display} + Batch Processing")
+            info_lines.append(f"🎯 Enhanced ReID + 3D: Quality-based assignment with {sam_model_display}")
             
             active_tracks = tracking_info.get('active_tracks', 0)
             reid_reassignments = stats.get('reid_reassignments', 0) if stats else 0
-            reid_3d_improvements = stats.get('reid_3d_improvements', 0) if stats else 0
+            poses_3d = stats.get('poses_3d_generated', 0) if stats else 0
             
-            info_lines.append(f"   Active:{active_tracks} Reassign:{reid_reassignments} 3D-Improve:{reid_3d_improvements}")
-            
-            # Feature weights
-            visual_weight = getattr(self.config, 'visual_feature_weight', 0.35)
-            pose_3d_weight = getattr(self.config, 'pose_3d_feature_weight', 0.30)
-            geometric_weight = getattr(self.config, 'geometric_feature_weight', 0.20)
-            
-            info_lines.append(f"   Weights: Visual({visual_weight:.2f}) 3D-Pose({pose_3d_weight:.2f}) Geometric({geometric_weight:.2f})")
+            info_lines.append(f"   Active:{active_tracks} Reassignments:{reid_reassignments} 3D-Poses:{poses_3d}")
+            info_lines.append(f"   Features: Track stability + 3D geometric features + Motion prediction")
         else:
-            info_lines.append(f"🎯 GPU-Accelerated 3D ReID: DISABLED")
+            info_lines.append(f"🎯 Enhanced ReID + 3D: DISABLED")
         
-        info_lines.append(f"🎨 3D Integration: GPU Depth + Batch 3D Conversion + Parallel Processing")
-        info_lines.append(f"📊 Advanced Logging: Performance + 3D Metrics + GPU Monitoring")
+        info_lines.append(f"🎨 Yellow crosses = motion predictions | Cyan text = 3D pose info")
+        info_lines.append(f"📊 Debug logging: ENABLED (logs saved at end)")
         
         if self.config.horse_pose_estimator == 'dual' and stats:
             info_lines.append(f"Competition - SuperAnimal:{stats.get('superanimal_wins', 0)} ViTPose:{stats.get('vitpose_wins', 0)}")
         
         if self.config.display:
-            info_lines.append(f"Controls: SPACE=Pause Q=Quit | GPU-accelerated 3D visualizations")
+            info_lines.append(f"Controls: SPACE=Pause Q=Quit | Enhanced 3D visualizations in corners")
         
         # Semi-transparent background
         overlay = frame.copy()
         overlay_height = 25 + len(info_lines) * 18
-        cv2.rectangle(overlay, (5, 5), (1100, overlay_height), (0, 0, 0), -1)
+        cv2.rectangle(overlay, (5, 5), (1000, overlay_height), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
         
         for i, line in enumerate(info_lines):
@@ -809,42 +756,6 @@ class HybridPoseSystem:
             cv2.putText(frame, line, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
         return frame
-    
-    def process_video(self):
-        """Main video processing method"""
-        try:
-            output_path, perf_summary = self.process_video_with_parallel_execution()
-            
-            # Print comprehensive final report
-            print(f"\n✅ GPU-Accelerated 3D Processing Complete!")
-            print(f"🎯 Output: {output_path}")
-            
-            print(f"\n📊 Final Performance Report:")
-            print(f"   Average FPS: {perf_summary['avg_fps']:.2f}")
-            print(f"   Total Frame Time: {perf_summary['avg_frame_time']*1000:.1f}ms avg")
-            
-            # Component timing breakdown
-            component_times = perf_summary.get('component_times', {})
-            if component_times:
-                print(f"\n⏱️ Component Timing Breakdown:")
-                for component, timing in sorted(component_times.items(), key=lambda x: x[1]['percentage'], reverse=True):
-                    print(f"   {component}: {timing['avg_ms']:.1f}ms avg ({timing['percentage']:.1f}%)")
-            
-            # Resource usage
-            resource_usage = perf_summary.get('resource_usage', {})
-            print(f"\n💾 Resource Usage:")
-            print(f"   Average GPU Memory: {resource_usage.get('avg_gpu_memory_mb', 0):.0f} MB")
-            print(f"   Peak GPU Memory: {resource_usage.get('peak_gpu_memory_mb', 0):.0f} MB")
-            print(f"   Average CPU Usage: {resource_usage.get('avg_cpu_percent', 0):.1f}%")
-            print(f"   Average RAM Usage: {resource_usage.get('avg_memory_mb', 0):.0f} MB")
-            
-            return output_path
-            
-        except Exception as e:
-            print(f"❌ Error during processing: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
 
 
 def main():
@@ -862,12 +773,12 @@ def main():
     video_path = getattr(config, 'video_path', None)
     if not video_path:
         print("❌ Error: Config file must specify 'video_path'")
+        print("Available config attributes:", [attr for attr in dir(config) if not attr.startswith('_')])
         sys.exit(1)
     
-    # Auto-detect device
-    if config.device == "cpu" and torch.cuda.is_available():
+    # Auto-detect device if not specified
+    if config.device == "cpu" and VITPOSE_AVAILABLE and torch.cuda.is_available():
         config.device = "cuda"
-        print(f"🚀 GPU detected, switching to CUDA acceleration")
     
     # Check if video file exists
     video_file = Path(video_path)
@@ -876,24 +787,13 @@ def main():
         sys.exit(1)
     
     try:
-        print(f"🎬 Initializing GPU-Accelerated 3D Horse Tracking System...")
         system = HybridPoseSystem(video_path, config)
-        output_path = system.process_video()
-        
-        if output_path:
-            print(f"\n🎊 Processing completed successfully!")
-            print(f"📁 Output saved to: {output_path}")
-        else:
-            print(f"\n❌ Processing failed")
-            sys.exit(1)
-            
+        system.process_video()
     except Exception as e:
-        print(f"❌ System Error: {e}")
+        print(f"❌ Error: {e}")
         import traceback
         traceback.print_exc()
-        sys.exit(1)
 
 
 if __name__ == "__main__":
     main()
-    

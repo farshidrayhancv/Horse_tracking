@@ -1,6 +1,7 @@
 """
-Enhanced SAMURAI ReID Pipeline with 3D Pose Integration
-Implements intelligent track assignment with quality-based reassignment and 3D pose features
+Enhanced SAMURAI ReID Pipeline with 3D Pose Integration - FIXED VERSION
+Implements intelligent track assignment with quality-based reassignment
+FIXED: Feature dimension mismatch between 3D-enhanced and original features
 """
 
 import torch
@@ -11,6 +12,9 @@ import torch.nn.functional as F
 from collections import deque, defaultdict
 import os
 from PIL import Image
+
+# Import our 3D pose estimator
+from pose_3d_estimator import Pose3DEstimator
 
 try:
     import supervision as sv
@@ -37,19 +41,19 @@ except ImportError:
 
 
 class TrackStabilityManager:
-    """Manage track assignment stability and prevent oscillation"""
+    """NEW: Manage track assignment stability and prevent oscillation"""
     
     def __init__(self, cooling_period=10, oscillation_threshold=3):
-        self.cooling_period = cooling_period
-        self.oscillation_threshold = oscillation_threshold
+        self.cooling_period = cooling_period  # Frames to wait after reassignment
+        self.oscillation_threshold = oscillation_threshold  # Max oscillations before penalty
         
         # Track assignment records
-        self.assignment_history = defaultdict(deque)
-        self.cooling_until = defaultdict(int)
-        self.oscillation_count = defaultdict(int)
-        self.last_target_ids = defaultdict(deque)
-        self.assignment_confidence = defaultdict(float)
-        self.assignment_frame = defaultdict(int)
+        self.assignment_history = defaultdict(deque)  # Track recent assignments
+        self.cooling_until = defaultdict(int)  # Frame when cooling ends
+        self.oscillation_count = defaultdict(int)  # Count of oscillations
+        self.last_target_ids = defaultdict(deque)  # Recent target IDs
+        self.assignment_confidence = defaultdict(float)  # Confidence in current assignment
+        self.assignment_frame = defaultdict(int)  # When assignment was made
         
         self.current_frame = 0
         
@@ -125,7 +129,7 @@ class TrackStabilityManager:
 
 
 class TrackQualityMonitor:
-    """Enhanced track quality monitoring with temporal consistency and 3D pose integration"""
+    """Enhanced track quality monitoring with temporal consistency"""
     
     def __init__(self, stability_window=10):
         self.stability_window = stability_window
@@ -136,18 +140,12 @@ class TrackQualityMonitor:
         self.track_age = defaultdict(int)
         self.track_first_seen = {}
         
-        # 3D pose specific metrics
-        self.pose_3d_quality_history = defaultdict(deque)
-        self.depth_consistency_history = defaultdict(deque)
-        self.pose_stability_scores = defaultdict(float)
-        
         # Stability scores
         self.stability_scores = defaultdict(float)
         self.last_update = defaultdict(int)
     
-    def update_track_quality(self, track_id: int, confidence: float, position: np.ndarray, 
-                           frame_num: int, pose_3d_data: Dict = None):
-        """Update quality metrics for a track including 3D pose data"""
+    def update_track_quality(self, track_id: int, confidence: float, position: np.ndarray, frame_num: int):
+        """Update quality metrics for a track"""
         
         # Track first appearance
         if track_id not in self.track_first_seen:
@@ -179,24 +177,11 @@ class TrackQualityMonitor:
         if len(self.position_variance[track_id]) > self.stability_window:
             self.position_variance[track_id].pop(0)
         
-        # Update 3D pose quality metrics
-        if pose_3d_data:
-            pose_3d_quality = pose_3d_data.get('confidence_3d', 0.0)
-            self.pose_3d_quality_history[track_id].append(pose_3d_quality)
-            if len(self.pose_3d_quality_history[track_id]) > self.stability_window:
-                self.pose_3d_quality_history[track_id].popleft()
-            
-            # Depth consistency
-            if 'depth_variance' in pose_3d_data:
-                self.depth_consistency_history[track_id].append(pose_3d_data['depth_variance'])
-                if len(self.depth_consistency_history[track_id]) > self.stability_window:
-                    self.depth_consistency_history[track_id].popleft()
-        
-        # Calculate stability score with 3D pose integration
-        self._calculate_stability_score_3d(track_id, variance)
+        # Calculate stability score
+        self._calculate_stability_score(track_id, variance)
     
-    def _calculate_stability_score_3d(self, track_id: int, position_variance: float):
-        """Calculate overall stability score for track including 3D pose metrics"""
+    def _calculate_stability_score(self, track_id: int, position_variance: float):
+        """Calculate overall stability score for track"""
         
         # Confidence stability (high = consistent confidence)
         confidences = list(self.confidence_history[track_id])
@@ -213,39 +198,13 @@ class TrackQualityMonitor:
         # Age factor (older tracks are more stable)
         age_factor = min(1.0, self.track_age[track_id] / 20.0)
         
-        # 3D pose stability
-        pose_3d_stability = 0.5  # Default neutral score
-        if self.pose_3d_quality_history[track_id]:
-            pose_qualities = list(self.pose_3d_quality_history[track_id])
-            if len(pose_qualities) > 1:
-                pose_mean = np.mean(pose_qualities)
-                pose_std = np.std(pose_qualities)
-                pose_3d_stability = pose_mean * (1.0 - min(1.0, pose_std))
-            else:
-                pose_3d_stability = pose_qualities[0]
-        
-        # Depth consistency
-        depth_stability = 0.5  # Default neutral score
-        if self.depth_consistency_history[track_id]:
-            depth_variances = list(self.depth_consistency_history[track_id])
-            if depth_variances:
-                avg_depth_var = np.mean(depth_variances)
-                depth_stability = 1.0 / (1.0 + avg_depth_var / 500.0)  # Lower variance = better
-        
-        # Combined stability score with 3D pose integration
-        stability = (conf_mean * 0.25 + conf_stability * 0.20 + motion_stability * 0.15 + 
-                    age_factor * 0.10 + pose_3d_stability * 0.20 + depth_stability * 0.10)
-        
+        # Combined stability score
+        stability = conf_mean * 0.4 + conf_stability * 0.3 + motion_stability * 0.2 + age_factor * 0.1
         self.stability_scores[track_id] = stability
-        self.pose_stability_scores[track_id] = pose_3d_stability
     
     def get_track_stability(self, track_id: int) -> float:
         """Get stability score for track (0.0 = unstable, 1.0 = very stable)"""
         return self.stability_scores.get(track_id, 0.0)
-    
-    def get_pose_3d_stability(self, track_id: int) -> float:
-        """Get 3D pose stability score for track"""
-        return self.pose_stability_scores.get(track_id, 0.0)
     
     def is_new_track(self, track_id: int, frame_num: int, newness_threshold: int = 5) -> bool:
         """Check if track is newly created"""
@@ -276,13 +235,10 @@ class TrackQualityMonitor:
         self.track_first_seen.pop(track_id, None)
         self.stability_scores.pop(track_id, None)
         self.last_update.pop(track_id, None)
-        self.pose_3d_quality_history.pop(track_id, None)
-        self.depth_consistency_history.pop(track_id, None)
-        self.pose_stability_scores.pop(track_id, None)
 
 
 class MotionAwareMemory:
-    """Enhanced memory with motion prediction and 3D pose storage"""
+    """Enhanced memory with motion prediction and consistent feature dimensions"""
     
     def __init__(self, memory_size=15):
         self.memory_size = memory_size
@@ -294,31 +250,21 @@ class MotionAwareMemory:
         self.mask_memory = defaultdict(deque)
         self.confidence_memory = defaultdict(deque)
         
-        # 3D pose memory
-        self.pose_3d_features_memory = defaultdict(deque)
-        self.depth_stats_memory = defaultdict(deque)
+        # NEW: Track feature dimensions for consistency
+        self.feature_dimensions = defaultdict(int)
     
     def update_track_memory(self, track_id: int, feature: np.ndarray, position: np.ndarray, 
-                           bbox: np.ndarray, mask: np.ndarray, confidence: float,
-                           pose_3d_features: np.ndarray = None, depth_stats: Dict = None):
-        """Update memory for track including 3D pose features"""
+                           bbox: np.ndarray, mask: np.ndarray, confidence: float):
+        """Update memory for track with consistent feature dimensions"""
+        
+        # Store feature dimension for this track
+        self.feature_dimensions[track_id] = len(feature)
         
         self.feature_memory[track_id].append(feature)
         self.position_memory[track_id].append(position)
         self.bbox_memory[track_id].append(bbox)
         self.mask_memory[track_id].append(mask)
         self.confidence_memory[track_id].append(confidence)
-        
-        # Store 3D pose features
-        if pose_3d_features is not None:
-            self.pose_3d_features_memory[track_id].append(pose_3d_features)
-            if len(self.pose_3d_features_memory[track_id]) > self.memory_size:
-                self.pose_3d_features_memory[track_id].popleft()
-        
-        if depth_stats is not None:
-            self.depth_stats_memory[track_id].append(depth_stats)
-            if len(self.depth_stats_memory[track_id]) > self.memory_size:
-                self.depth_stats_memory[track_id].popleft()
         
         # Maintain memory size
         for memory_bank in [self.feature_memory, self.position_memory, self.bbox_memory,
@@ -354,24 +300,20 @@ class MotionAwareMemory:
         features = list(self.feature_memory[track_id])
         return features[-n_recent:] if len(features) >= n_recent else features
     
-    def get_recent_3d_pose_features(self, track_id: int, n_recent: int = 3) -> List[np.ndarray]:
-        """Get recent 3D pose features for similarity comparison"""
-        if track_id not in self.pose_3d_features_memory:
-            return []
-        
-        features = list(self.pose_3d_features_memory[track_id])
-        return features[-n_recent:] if len(features) >= n_recent else features
+    def get_feature_dimension(self, track_id: int) -> int:
+        """Get stored feature dimension for track"""
+        return self.feature_dimensions.get(track_id, 0)
     
     def cleanup_track(self, track_id: int):
         """Remove track from memory"""
         for memory_bank in [self.feature_memory, self.position_memory, self.bbox_memory,
-                           self.mask_memory, self.confidence_memory, self.pose_3d_features_memory,
-                           self.depth_stats_memory]:
+                           self.mask_memory, self.confidence_memory]:
             memory_bank.pop(track_id, None)
+        self.feature_dimensions.pop(track_id, None)
 
 
 class EnhancedReIDPipeline:
-    """Enhanced ReID Pipeline with 3D Pose Integration and Intelligent Track Assignment"""
+    """Enhanced ReID Pipeline with Intelligent Track Assignment + STABILITY CONTROLS + 3D POSE INTEGRATION"""
     
     def __init__(self, config):
         self.config = config
@@ -386,6 +328,15 @@ class EnhancedReIDPipeline:
         self.depth_pipeline = None
         self.setup_depth_anything()
         
+        # NEW: Initialize 3D Pose Estimator
+        self.pose_3d_estimator = None
+        if getattr(config, 'enable_pose_prediction', False) or getattr(config, 'enable_multi_scale_depth', False):
+            try:
+                self.pose_3d_estimator = Pose3DEstimator(config)
+                print("✅ 3D Pose Estimator integrated")
+            except Exception as e:
+                print(f"⚠️ 3D Pose Estimator failed to initialize: {e}")
+        
         # Core components
         self.memory = MotionAwareMemory(
             memory_size=getattr(config, 'samurai_memory_size', 15)
@@ -394,38 +345,45 @@ class EnhancedReIDPipeline:
             stability_window=getattr(config, 'quality_stability_window', 10)
         )
         
-        # Stability management
+        # NEW: Stability management
         self.stability_manager = TrackStabilityManager(
             cooling_period=getattr(config, 'cooling_period', 10),
             oscillation_threshold=getattr(config, 'oscillation_threshold', 3)
         )
         
-        # Configuration parameters
+        # Configuration parameters with HYSTERESIS
         self.similarity_threshold = getattr(config, 'reid_similarity_threshold', 0.3)
         self.initial_assignment_threshold = getattr(config, 'initial_assignment_threshold', 0.5)
-        self.reassignment_threshold = getattr(config, 'reassignment_threshold', 0.7)
+        self.reassignment_threshold = getattr(config, 'reassignment_threshold', 0.7)  # Higher bar for stealing
         
         self.motion_distance_threshold = getattr(config, 'motion_distance_threshold', 150)
         self.stability_threshold = getattr(config, 'track_stability_threshold', 0.4)
         self.newness_threshold = getattr(config, 'track_newness_threshold', 5)
-        
-        # 3D pose integration weights
-        self.visual_feature_weight = 0.4
-        self.pose_3d_feature_weight = 0.35
-        self.motion_weight = 0.15
-        self.stability_weight = 0.10
         
         # Tracking stats
         self.reassignment_count = 0
         self.oscillations_prevented = 0
         self.stability_locks = 0
         self.frame_count = 0
-        self.pose_3d_improvements = 0
         
         # Store current frame data
         self.current_masks = []
         self._last_depth_map = None
-        self.current_3d_poses = []
+        self._current_poses_3d = []  # NEW: Store 3D poses
+        
+        # NEW: Feature dimension management
+        self.base_visual_feature_dim = 32  # Standard visual features
+        self.geometric_feature_dim = 20    # 3D geometric features
+        self.enhanced_feature_dim = self.base_visual_feature_dim + self.geometric_feature_dim  # 52
+        
+        print(f"🎯 Enhanced ReID Pipeline initialized with STABILITY CONTROLS + 3D INTEGRATION")
+        print(f"   SAM model: {self.sam_model_type or 'disabled'}")
+        print(f"   3D Pose Integration: {'ENABLED' if self.pose_3d_estimator else 'DISABLED'}")
+        print(f"   Feature dimensions: Visual({self.base_visual_feature_dim}) + Geometric({self.geometric_feature_dim}) = Enhanced({self.enhanced_feature_dim})")
+        print(f"   Initial assignment threshold: {self.initial_assignment_threshold}")
+        print(f"   Reassignment threshold: {self.reassignment_threshold}")
+        print(f"   Cooling period: {getattr(config, 'cooling_period', 10)} frames")
+        print(f"   Oscillation prevention: ENABLED")
     
     def setup_sam_model(self):
         """Initialize SAM model"""
@@ -436,8 +394,9 @@ class EnhancedReIDPipeline:
             try:
                 self.sam_predictor = SAM2ImagePredictor.from_pretrained("facebook/sam2.1-hiera-base-plus")
                 self.sam_model_type = 'sam2'
-            except Exception:
-                pass
+                print("✅ SAM2 loaded")
+            except Exception as e:
+                print(f"❌ SAM2 failed: {e}")
         
         elif self.config.sam_model == 'mobilesam' and MOBILESAM_AVAILABLE:
             try:
@@ -460,8 +419,9 @@ class EnhancedReIDPipeline:
                 sam.to(device=self.device)
                 self.sam_predictor = SamPredictor(sam)
                 self.sam_model_type = 'mobilesam'
-            except Exception:
-                pass
+                print("✅ MobileSAM loaded")
+            except Exception as e:
+                print(f"❌ MobileSAM failed: {e}")
     
     def setup_depth_anything(self):
         """Initialize Depth Anything"""
@@ -471,11 +431,12 @@ class EnhancedReIDPipeline:
         try:
             self.depth_pipeline = pipeline(
                 task="depth-estimation", 
-                model="depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf",
+                model="depth-anything/Depth-Anything-V2-Small-hf",
                 device=0 if self.device == "cuda" else -1
             )
-        except Exception:
-            pass
+            print("✅ Depth Anything loaded")
+        except Exception as e:
+            print(f"❌ Depth Anything failed: {e}")
     
     def estimate_depth_full_image(self, frame: np.ndarray) -> np.ndarray:
         """Estimate depth map for entire image"""
@@ -498,7 +459,8 @@ class EnhancedReIDPipeline:
                 depth_normalized = np.zeros_like(depth_resized)
             
             return depth_normalized.astype(np.uint8)
-        except Exception:
+        except Exception as e:
+            print(f"❌ Depth estimation failed: {e}")
             return np.zeros_like(frame[:,:,0])
     
     def segment_with_sam(self, frame: np.ndarray, bbox: np.ndarray) -> Tuple[np.ndarray, float]:
@@ -538,21 +500,22 @@ class EnhancedReIDPipeline:
             
             return best_mask.astype(bool), best_score
             
-        except Exception:
+        except Exception as e:
+            print(f"❌ SAM segmentation failed: {e}")
             h, w = frame.shape[:2]
             return np.zeros((h, w), dtype=bool), 0.0
     
     def extract_visual_features(self, frame: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        """Extract visual features from masked region"""
+        """Extract visual features from masked region - always returns 32-dimensional features"""
         try:
             mask = mask.astype(bool)
             
             if not np.any(mask):
-                return np.random.rand(64) * 0.01
+                return np.random.rand(self.base_visual_feature_dim) * 0.01
             
             features = []
             
-            # Color features
+            # Color features (24 dimensions: 8 bins × 3 channels)
             masked_region = frame.copy()
             masked_region[~mask] = 0
             
@@ -561,7 +524,7 @@ class EnhancedReIDPipeline:
                 hist = cv2.calcHist([masked_region], [channel], mask.astype(np.uint8), [8], [0, 256])
                 features.extend(hist.flatten())
             
-            # Texture features  
+            # Texture features (4 dimensions)
             gray = cv2.cvtColor(masked_region, cv2.COLOR_BGR2GRAY)
             
             if np.any(mask):
@@ -577,7 +540,7 @@ class EnhancedReIDPipeline:
             else:
                 features.extend([0, 0, 0, 0])
             
-            # Shape features
+            # Shape features (4 dimensions)
             contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             if contours:
@@ -597,6 +560,9 @@ class EnhancedReIDPipeline:
             else:
                 features.extend([0, 0, 0, 0])
             
+            # Ensure exactly 32 dimensions
+            features = features[:self.base_visual_feature_dim] + [0] * max(0, self.base_visual_feature_dim - len(features))
+            
             # Normalize
             features = np.array(features, dtype=np.float32)
             features = np.nan_to_num(features, nan=0.0, posinf=1.0, neginf=-1.0)
@@ -607,82 +573,101 @@ class EnhancedReIDPipeline:
             
             return features
             
-        except Exception:
-            return np.random.rand(64) * 0.01
+        except Exception as e:
+            print(f"❌ Feature extraction failed: {e}")
+            return np.random.rand(self.base_visual_feature_dim) * 0.01
     
-    def extract_combined_features(self, visual_features: np.ndarray, pose_3d_features: np.ndarray) -> np.ndarray:
-        """Combine visual and 3D pose features for enhanced ReID"""
-        # Ensure both feature vectors have consistent dimensions
-        if visual_features.shape[0] != 64:
-            visual_features = np.resize(visual_features, 64)
-        if pose_3d_features.shape[0] != 32:
-            pose_3d_features = np.resize(pose_3d_features, 32)
+    def normalize_feature_dimensions(self, feature1: np.ndarray, feature2: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        CRITICAL FIX: Normalize features to same dimensions for comparison
+        Handles mismatch between 32-dim visual and 52-dim enhanced features
+        """
+        dim1, dim2 = len(feature1), len(feature2)
         
-        # Weighted combination
-        combined = np.concatenate([
-            visual_features * 0.6,  # Visual features with 60% weight
-            pose_3d_features * 0.4  # 3D pose features with 40% weight
-        ])
+        if dim1 == dim2:
+            return feature1, feature2
         
-        # Normalize combined features
-        norm = np.linalg.norm(combined)
-        if norm > 0:
-            combined = combined / norm
+        # Determine target dimension (use the larger one for better information preservation)
+        target_dim = max(dim1, dim2)
         
-        return combined
+        def pad_or_truncate(feat, target_size):
+            if len(feat) < target_size:
+                # Pad with zeros
+                padded = np.zeros(target_size)
+                padded[:len(feat)] = feat
+                return padded
+            elif len(feat) > target_size:
+                # If enhanced features (52-dim) need to be compared with visual (32-dim),
+                # extract only the visual part (first 32 dimensions)
+                return feat[:target_size]
+            else:
+                return feat
+        
+        normalized_feat1 = pad_or_truncate(feature1, target_dim)
+        normalized_feat2 = pad_or_truncate(feature2, target_dim)
+        
+        return normalized_feat1, normalized_feat2
     
-    def calculate_similarity_3d(self, feature1: np.ndarray, feature2: np.ndarray, 
-                               pose3d_feature1: np.ndarray, pose3d_feature2: np.ndarray) -> float:
-        """Calculate enhanced similarity using both visual and 3D pose features"""
-        
-        # Visual similarity
-        visual_sim = np.dot(feature1, feature2) / (np.linalg.norm(feature1) * np.linalg.norm(feature2) + 1e-8)
-        
-        # 3D pose similarity
-        pose3d_sim = 0.0
-        if pose3d_feature1.size > 0 and pose3d_feature2.size > 0:
-            pose3d_sim = np.dot(pose3d_feature1, pose3d_feature2) / (
-                np.linalg.norm(pose3d_feature1) * np.linalg.norm(pose3d_feature2) + 1e-8)
-        
-        # Combined similarity with adaptive weighting
-        if pose3d_sim > 0:
-            combined_sim = visual_sim * 0.6 + pose3d_sim * 0.4
-            self.pose_3d_improvements += 1  # Track 3D improvements
-        else:
-            combined_sim = visual_sim  # Fallback to visual only
-        
-        return float(combined_sim)
+    def calculate_similarity(self, feature1: np.ndarray, feature2: np.ndarray) -> float:
+        """
+        FIXED: Calculate similarity between features with dimension normalization
+        """
+        try:
+            # Normalize feature dimensions to handle mismatch
+            norm_feat1, norm_feat2 = self.normalize_feature_dimensions(feature1, feature2)
+            
+            # Calculate cosine similarity
+            dot_product = np.dot(norm_feat1, norm_feat2)
+            norm_product = np.linalg.norm(norm_feat1) * np.linalg.norm(norm_feat2)
+            cos_sim = dot_product / (norm_product + 1e-8)
+            
+            # Calculate L2 similarity
+            l2_dist = np.linalg.norm(norm_feat1 - norm_feat2)
+            l2_sim = 1.0 / (1.0 + l2_dist)
+            
+            # Combined similarity
+            similarity = 0.7 * cos_sim + 0.3 * l2_sim
+            
+            return float(np.clip(similarity, 0.0, 1.0))
+            
+        except Exception as e:
+            print(f"❌ Similarity calculation failed: {e}")
+            return 0.0
     
     def find_best_reassignment_candidate(self, query_feature: np.ndarray, query_position: np.ndarray, 
-                                       query_pose3d_feature: np.ndarray, exclude_track_id: int, 
-                                       current_track_ids: set) -> Tuple[int, float]:
-        """Find best memory track for reassignment with 3D pose integration"""
+                                       exclude_track_id: int, current_track_ids: set) -> Tuple[int, float]:
+        """Find best memory track for reassignment with STABILITY CONTROLS and dimension handling"""
         
         best_track_id = -1
         best_score = 0.0
         
         for track_id in self.memory.feature_memory:
-            if track_id == exclude_track_id or track_id in current_track_ids:
+            if track_id == exclude_track_id:
+                continue
+                
+            # CRITICAL: Avoid conflicts - don't assign to currently active tracks
+            if track_id in current_track_ids:
                 continue
             
             # Get recent features
             recent_features = self.memory.get_recent_features(track_id, n_recent=3)
-            recent_3d_features = self.memory.get_recent_3d_pose_features(track_id, n_recent=3)
-            
             if not recent_features:
                 continue
             
-            # Calculate visual similarity
-            visual_similarities = [np.dot(query_feature, feat) / (np.linalg.norm(query_feature) * np.linalg.norm(feat) + 1e-8) 
-                                 for feat in recent_features]
-            best_visual_sim = max(visual_similarities)
+            # Calculate visual similarity with dimension normalization
+            visual_similarities = []
+            for feat in recent_features:
+                try:
+                    sim = self.calculate_similarity(query_feature, feat)
+                    visual_similarities.append(sim)
+                except Exception as e:
+                    print(f"⚠️ Similarity calculation failed for track {track_id}: {e}")
+                    visual_similarities.append(0.0)
             
-            # Calculate 3D pose similarity
-            pose3d_sim = 0.0
-            if recent_3d_features and query_pose3d_feature.size > 0:
-                pose3d_similarities = [self.calculate_similarity_3d(query_feature, feat, query_pose3d_feature, pose3d_feat) 
-                                     for feat, pose3d_feat in zip(recent_features, recent_3d_features)]
-                pose3d_sim = max(pose3d_similarities) if pose3d_similarities else 0.0
+            if not visual_similarities:
+                continue
+                
+            best_visual_sim = max(visual_similarities)
             
             # Calculate motion consistency
             predicted_pos = self.memory.predict_next_position(track_id)
@@ -690,30 +675,21 @@ class EnhancedReIDPipeline:
                 distance = np.linalg.norm(query_position - predicted_pos)
                 motion_score = 1.0 / (1.0 + distance / self.motion_distance_threshold)
             else:
-                motion_score = 0.5
+                motion_score = 0.5  # Neutral score if no motion prediction
             
             # Get track stability
             stability = self.quality_monitor.get_track_stability(track_id)
             
-            # Stability factors
+            # STABILITY FACTORS
             stability_bonus = self.stability_manager.get_stability_bonus(track_id)
             stability_penalty = self.stability_manager.get_stability_penalty(track_id)
             
-            # Enhanced combined score with 3D pose integration
-            if pose3d_sim > 0:
-                combined_score = (best_visual_sim * self.visual_feature_weight + 
-                                pose3d_sim * self.pose_3d_feature_weight + 
-                                motion_score * self.motion_weight + 
-                                stability * self.stability_weight + 
-                                stability_bonus - stability_penalty)
-            else:
-                combined_score = (best_visual_sim * (self.visual_feature_weight + self.pose_3d_feature_weight) + 
-                                motion_score * self.motion_weight + 
-                                stability * self.stability_weight + 
-                                stability_bonus - stability_penalty)
+            # Combined score with stability
+            combined_score = (best_visual_sim * 0.6 + motion_score * 0.25 + stability * 0.15 
+                            + stability_bonus - stability_penalty)
             
             # Use appropriate threshold
-            threshold = self.reassignment_threshold
+            threshold = self.reassignment_threshold  # Higher bar for reassignment
             
             if combined_score > best_score and best_visual_sim > threshold:
                 best_score = combined_score
@@ -721,8 +697,8 @@ class EnhancedReIDPipeline:
         
         return best_track_id, best_score
     
-    def intelligent_track_assignment(self, detections, reid_features, pose_3d_features_list):
-        """Core intelligent track assignment logic with 3D pose integration"""
+    def intelligent_track_assignment(self, detections, reid_features):
+        """Core intelligent track assignment logic WITH STABILITY CONTROLS"""
         
         if not sv or len(detections) == 0 or len(reid_features) == 0:
             return detections
@@ -730,7 +706,7 @@ class EnhancedReIDPipeline:
         if not hasattr(detections, 'tracker_id'):
             return detections
         
-        # Copy supervision Detections object
+        # Properly copy supervision Detections object
         enhanced_detections = sv.Detections(
             xyxy=detections.xyxy.copy(),
             confidence=detections.confidence.copy() if hasattr(detections, 'confidence') else None,
@@ -739,16 +715,22 @@ class EnhancedReIDPipeline:
         )
         
         reassignments_this_frame = 0
+        
+        # Get set of currently active track IDs to avoid conflicts
         current_track_ids = set(enhanced_detections.tracker_id[enhanced_detections.tracker_id >= 0])
         
         # Find candidates for reassignment
         candidates = []
         
         for i, track_id in enumerate(detections.tracker_id):
-            if track_id < 0 or i >= len(reid_features):
+            if track_id < 0:
+                continue
+
+            if i >= len(reid_features):
+                print(f"⚠️ Missing ReID feature for detection index {i}, skipping")
                 continue
             
-            # Stability check
+            # STABILITY CHECK: Skip if track is locked in cooling period
             if self.stability_manager.is_track_locked(track_id):
                 self.stability_locks += 1
                 continue
@@ -756,10 +738,6 @@ class EnhancedReIDPipeline:
             bbox = detections.xyxy[i]
             center = np.array([(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2])
             feature = reid_features[i]
-            
-            # Get 3D pose features if available
-            pose_3d_features = (pose_3d_features_list[i] if i < len(pose_3d_features_list) 
-                              else np.array([]))
             
             should_check = False
             reason = ""
@@ -769,7 +747,7 @@ class EnhancedReIDPipeline:
                 should_check = True
                 reason = "new_track"
             
-            # Check if unstable track
+            # Check if unstable track (but only if not locked)
             elif self.quality_monitor.is_unstable_track(track_id, self.stability_threshold):
                 should_check = True
                 reason = "unstable_track"
@@ -780,26 +758,25 @@ class EnhancedReIDPipeline:
                     'track_id': track_id,
                     'position': center,
                     'feature': feature,
-                    'pose_3d_features': pose_3d_features,
                     'reason': reason
                 })
         
-        # Process reassignment candidates with 3D pose integration
+        # Process reassignment candidates with STABILITY CONTROLS
         for candidate in candidates:
             i = candidate['index']
             current_track_id = candidate['track_id']
             position = candidate['position']
             feature = candidate['feature']
-            pose_3d_features = candidate['pose_3d_features']
             reason = candidate['reason']
             
-            # Find best memory match with 3D pose features
+            # Find best memory match
             best_match_id, best_score = self.find_best_reassignment_candidate(
-                feature, position, pose_3d_features, exclude_track_id=current_track_id, 
+                feature, position, exclude_track_id=current_track_id, 
                 current_track_ids=current_track_ids
             )
             
-            min_reassignment_score = 0.6
+            # Decide on reassignment with higher threshold
+            min_reassignment_score = 0.6  # Higher threshold for reassignment
             
             if best_match_id >= 0 and best_score > min_reassignment_score:
                 # Check for oscillation
@@ -809,19 +786,25 @@ class EnhancedReIDPipeline:
                 
                 if is_oscillating:
                     self.oscillations_prevented += 1
+                    print(f"🚫 OSCILLATION PREVENTED: Track #{current_track_id} → #{best_match_id}")
                     continue
                 
                 # Safe to reassign
                 enhanced_detections.tracker_id[i] = best_match_id
-                current_track_ids.remove(current_track_id)
-                current_track_ids.add(best_match_id)
+                current_track_ids.remove(current_track_id)  # Remove old
+                current_track_ids.add(best_match_id)  # Add new
                 
                 self.reassignment_count += 1
                 reassignments_this_frame += 1
                 
+                print(f"✅ STABLE REASSIGNMENT: Track #{current_track_id} → #{best_match_id} ({reason}, score: {best_score:.3f})")
+                
                 # Clean up old track if it was very new
                 if self.quality_monitor.is_new_track(current_track_id, self.frame_count, 2):
                     self.cleanup_track(current_track_id)
+        
+        if reassignments_this_frame > 0:
+            print(f"📊 Frame {self.frame_count}: {reassignments_this_frame} intelligent reassignments")
         
         return enhanced_detections
     
@@ -829,55 +812,65 @@ class EnhancedReIDPipeline:
         """Remove track from all data structures"""
         self.memory.cleanup_track(track_id)
         self.quality_monitor._remove_track(track_id)
+        
+        # NEW: Cleanup 3D pose history
+        if self.pose_3d_estimator:
+            self.pose_3d_estimator.cleanup_track_history(track_id)
     
-    def enhance_tracking(self, detections, reid_features, depth_stats=None, poses_3d=None):
-        """Main entry point for enhanced tracking with 3D pose integration"""
+    def enhance_tracking(self, detections, reid_features, depth_stats=None, poses_2d=None):
+        """Main entry point for enhanced tracking WITH 3D POSE INTEGRATION"""
         
         if not sv or len(detections) == 0 or len(reid_features) == 0:
             return detections
         
         self.frame_count += 1
-        self.stability_manager.advance_frame()
-        self.current_3d_poses = poses_3d or []
+        self.stability_manager.advance_frame()  # NEW: Advance stability manager
         
-        # Extract 3D pose features for ReID
-        pose_3d_features_list = []
-        if poses_3d:
-            for pose_3d in poses_3d:
-                if pose_3d and 'keypoints_3d' in pose_3d:
-                    # This will be populated by pose estimation manager
-                    pose_3d_features = pose_3d.get('pose_3d_features', np.array([]))
-                    pose_3d_features_list.append(pose_3d_features)
-                else:
-                    pose_3d_features_list.append(np.array([]))
+        # NEW: 3D Pose Integration with dimension consistency
+        enhanced_reid_features = reid_features
+        if self.pose_3d_estimator and poses_2d and self._last_depth_map is not None:
+            try:
+                # Estimate 3D poses from 2D poses and depth
+                poses_3d = self.pose_3d_estimator.estimate_3d_poses(poses_2d, self._last_depth_map)
+                self._current_poses_3d = poses_3d
+                
+                # Enhance ReID features with 3D geometric features
+                enhanced_reid_features = []
+                for i, visual_feat in enumerate(reid_features):
+                    pose_3d = poses_3d[i] if i < len(poses_3d) else None
+                    enhanced_feat = self.pose_3d_estimator.combine_features_with_3d(visual_feat, pose_3d)
+                    enhanced_reid_features.append(enhanced_feat)
+                
+                enhanced_reid_features = np.array(enhanced_reid_features) if enhanced_reid_features else reid_features
+                
+                print(f"🎯 3D Pose Integration: Enhanced {len(enhanced_reid_features)} features "
+                      f"from {reid_features[0].shape if len(reid_features) > 0 else 0}-D to "
+                      f"{enhanced_reid_features[0].shape if len(enhanced_reid_features) > 0 else 0}-D")
+                
+            except Exception as e:
+                print(f"⚠️ 3D Pose integration failed: {e}")
+                enhanced_reid_features = reid_features
+                self._current_poses_3d = []
+        else:
+            self._current_poses_3d = []
         
-        # Update track quality monitoring with 3D pose data
+        # Update track quality monitoring
         if hasattr(detections, 'tracker_id'):
             for i, track_id in enumerate(detections.tracker_id):
-                if track_id >= 0 and i < len(reid_features):
+                if track_id >= 0 and i < len(enhanced_reid_features):
                     bbox = detections.xyxy[i]
                     center = np.array([(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2])
                     confidence = detections.confidence[i] if hasattr(detections, 'confidence') else 0.8
                     
-                    # Get 3D pose data for this detection
-                    pose_3d_data = None
-                    if i < len(poses_3d) and poses_3d[i]:
-                        pose_3d_data = {
-                            'confidence_3d': poses_3d[i].get('confidence_3d', 0.0),
-                            'depth_variance': depth_stats[i].get('depth_variance', 0.0) if depth_stats and i < len(depth_stats) else 0.0
-                        }
-                    
-                    self.quality_monitor.update_track_quality(
-                        track_id, confidence, center, self.frame_count, pose_3d_data
-                    )
+                    self.quality_monitor.update_track_quality(track_id, confidence, center, self.frame_count)
         
-        # Apply intelligent track assignment with 3D pose integration
-        enhanced_detections = self.intelligent_track_assignment(detections, reid_features, pose_3d_features_list)
+        # Apply intelligent track assignment with STABILITY CONTROLS and enhanced features
+        enhanced_detections = self.intelligent_track_assignment(detections, enhanced_reid_features)
         
         # Cleanup old tracks
         active_track_ids = set(enhanced_detections.tracker_id[enhanced_detections.tracker_id >= 0])
         self.quality_monitor.cleanup_old_tracks(active_track_ids, self.frame_count)
-        self.stability_manager.cleanup_old_tracks(active_track_ids)
+        self.stability_manager.cleanup_old_tracks(active_track_ids)  # NEW: Cleanup stability data
         
         return enhanced_detections
     
@@ -923,7 +916,7 @@ class EnhancedReIDPipeline:
                 rgb_crops.append(rgb_crop)
                 depth_crops.append(depth_crop)
                 
-                # Extract features
+                # Extract visual features (always 32-dimensional)
                 feature = self.extract_visual_features(frame, mask)
                 features.append(feature)
                 
@@ -935,9 +928,11 @@ class EnhancedReIDPipeline:
                     'depth_variance': np.var(depth_crop[mask_crop]) if np.any(mask_crop) else 0
                 })
                 
-                # Update memory if valid track
+                # Update memory if valid track (store enhanced features if available)
                 if track_id >= 0:
                     center = np.array([(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2])
+                    # Note: We store visual features in memory and enhance them during comparison
+                    # This ensures consistency across frames regardless of 3D availability
                     self.memory.update_track_memory(track_id, feature, center, bbox, mask, confidence)
         
         return rgb_crops, depth_crops, depth_map, np.array(features), depth_stats
@@ -946,20 +941,16 @@ class EnhancedReIDPipeline:
         """Get current segmentation masks"""
         return self.current_masks
     
-    def get_current_3d_poses(self):
+    def get_current_poses_3d(self):
         """Get current 3D poses"""
-        return self.current_3d_poses
+        return self._current_poses_3d
     
     def get_reassignment_count(self):
         """Get total reassignments made"""
         return self.reassignment_count
     
-    def get_3d_improvements_count(self):
-        """Get count of 3D pose improvements"""
-        return self.pose_3d_improvements
-    
     def get_tracking_info(self):
-        """Get tracking information with 3D pose stats"""
+        """Get tracking information with stability stats and 3D pose info"""
         active_tracks = len(self.memory.feature_memory)
         
         # Get motion predictions
@@ -969,6 +960,11 @@ class EnhancedReIDPipeline:
             if pred_pos is not None:
                 motion_predictions[track_id] = pred_pos
         
+        # Get 3D pose stats
+        pose_3d_stats = {}
+        if self.pose_3d_estimator:
+            pose_3d_stats = self.pose_3d_estimator.get_3d_stats()
+        
         return {
             'active_tracks': active_tracks,
             'lost_tracks': 0,
@@ -976,7 +972,8 @@ class EnhancedReIDPipeline:
             'total_reassignments': self.reassignment_count,
             'oscillations_prevented': self.oscillations_prevented,
             'stability_locks': self.stability_locks,
-            'pose_3d_improvements': self.pose_3d_improvements,
             'frame_count': self.frame_count,
-            'memory_efficiency': len(self.memory.feature_memory)
+            'memory_efficiency': len(self.memory.feature_memory),
+            '3d_pose_stats': pose_3d_stats,
+            'current_3d_poses': len(self._current_poses_3d)
         }
