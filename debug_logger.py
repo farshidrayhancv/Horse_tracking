@@ -477,8 +477,8 @@ class TrackingDebugLogger:
     
     def _calculate_fragmentation_score(self):
         """Calculate track fragmentation score"""
-        expected_horses = 11  # Default expected
-        expected_jockeys = 11
+        expected_horses = 9  # Default expected
+        expected_jockeys = 9
         
         actual_horse_tracks = len([t for t in self.stats['track_lifecycle'].values() if t['type'] == 'horse'])
         actual_human_tracks = len([t for t in self.stats['track_lifecycle'].values() if t['type'] == 'human'])
@@ -646,7 +646,7 @@ class TrackingDebugLogger:
         """Print key findings and recommendations"""
         print(f"\n🔍 KEY FINDINGS for {self.video_name}:")
         print(f"📊 Track Fragmentation:")
-        print(f"   Expected: 11 horses, 11 jockeys")
+        print(f"   Expected: 9 horses, 9 jockeys")
         print(f"   Actual: {final_stats['tracking_stats']['unique_horse_tracks']} horses, {final_stats['tracking_stats']['unique_human_tracks']} humans")
         print(f"   Fragmentation Score: {final_stats['tracking_stats']['track_fragmentation_score']['overall_fragmentation']:.1f}x")
         

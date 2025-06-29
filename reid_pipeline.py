@@ -1,7 +1,6 @@
 """
-Enhanced SAMURAI ReID Pipeline - Based on 2023-2025 MOT Research
-Implements intelligent track assignment with quality-based reassignment
-FIXED VERSION with Stability Controls to prevent oscillation
+Enhanced SAMURAI ReID Pipeline - MegaDescriptor RGB+Depth Re-identification
+Uses object detection → SAM segmentation → MegaDescriptor embeddings for track assignment
 """
 
 import torch
@@ -33,54 +32,55 @@ except ImportError:
 try:
     from transformers import pipeline
     DEPTH_ANYTHING_AVAILABLE = True
+    print("✓ Depth-Anything (transformers) available")
 except ImportError:
     DEPTH_ANYTHING_AVAILABLE = False
+    print("⚠️ Depth-Anything not available - install: pip install transformers")
+
+try:
+    from transformers import AutoModel, AutoProcessor
+    MEGADESCRIPTOR_AVAILABLE = True
+    print("✓ MegaDescriptor (transformers) available")
+except ImportError:
+    MEGADESCRIPTOR_AVAILABLE = False
+    print("⚠️ MegaDescriptor not available - install: pip install transformers>=4.35.0")
 
 
 class TrackStabilityManager:
-    """NEW: Manage track assignment stability and prevent oscillation"""
+    """Manage track assignment stability and prevent oscillation"""
     
     def __init__(self, cooling_period=10, oscillation_threshold=3):
-        self.cooling_period = cooling_period  # Frames to wait after reassignment
-        self.oscillation_threshold = oscillation_threshold  # Max oscillations before penalty
+        self.cooling_period = cooling_period
+        self.oscillation_threshold = oscillation_threshold
         
-        # Track assignment records
-        self.assignment_history = defaultdict(deque)  # Track recent assignments
-        self.cooling_until = defaultdict(int)  # Frame when cooling ends
-        self.oscillation_count = defaultdict(int)  # Count of oscillations
-        self.last_target_ids = defaultdict(deque)  # Recent target IDs
-        self.assignment_confidence = defaultdict(float)  # Confidence in current assignment
-        self.assignment_frame = defaultdict(int)  # When assignment was made
+        self.assignment_history = defaultdict(deque)
+        self.cooling_until = defaultdict(int)
+        self.oscillation_count = defaultdict(int)
+        self.last_target_ids = defaultdict(deque)
+        self.assignment_confidence = defaultdict(float)
+        self.assignment_frame = defaultdict(int)
         
         self.current_frame = 0
         
     def is_track_locked(self, track_id: int) -> bool:
-        """Check if track is in cooling period"""
         return self.current_frame < self.cooling_until[track_id]
         
     def record_assignment(self, track_id: int, target_id: int, confidence: float) -> bool:
-        """Record a new assignment and return True if oscillating"""
-        
-        # Check for oscillation
         if target_id in self.last_target_ids[track_id]:
             self.oscillation_count[track_id] += 1
         else:
             self.oscillation_count[track_id] = max(0, self.oscillation_count[track_id] - 1)
             
-        # Update assignment record
         self.assignment_confidence[track_id] = confidence
         self.assignment_frame[track_id] = self.current_frame
         self.last_target_ids[track_id].append(target_id)
         
-        # Keep history manageable
         if len(self.last_target_ids[track_id]) > 5:
             self.last_target_ids[track_id].popleft()
             
-        # Set cooling period (longer if oscillating)
         cooling_multiplier = 1 + self.oscillation_count[track_id]
         self.cooling_until[track_id] = self.current_frame + (self.cooling_period * cooling_multiplier)
         
-        # Record in assignment history
         self.assignment_history[track_id].append({
             'frame': self.current_frame,
             'target_id': target_id,
@@ -92,27 +92,19 @@ class TrackStabilityManager:
         return self.oscillation_count[track_id] > self.oscillation_threshold
         
     def get_stability_penalty(self, track_id: int) -> float:
-        """Get penalty for unstable tracks"""
-        # Penalty for oscillation
         oscillation_penalty = min(0.5, self.oscillation_count[track_id] * 0.1)
-        
-        # Penalty for recent changes
         frames_since_assignment = self.current_frame - self.assignment_frame[track_id]
         recency_penalty = max(0, 0.3 - frames_since_assignment * 0.03)
-        
         return oscillation_penalty + recency_penalty
         
     def get_stability_bonus(self, track_id: int) -> float:
-        """Get bonus for stable assignments"""
         frames_stable = self.current_frame - self.assignment_frame[track_id]
         return min(0.2, frames_stable * 0.02)
         
     def advance_frame(self):
-        """Advance frame counter"""
         self.current_frame += 1
         
     def cleanup_old_tracks(self, active_tracks: set):
-        """Remove data for inactive tracks"""
         all_tracked = set(self.assignment_history.keys())
         inactive = all_tracked - active_tracks
         
@@ -131,33 +123,25 @@ class TrackQualityMonitor:
     def __init__(self, stability_window=10):
         self.stability_window = stability_window
         
-        # Track quality metrics
         self.confidence_history = defaultdict(deque)
         self.position_variance = defaultdict(list)
         self.track_age = defaultdict(int)
         self.track_first_seen = {}
         
-        # Stability scores
         self.stability_scores = defaultdict(float)
         self.last_update = defaultdict(int)
     
     def update_track_quality(self, track_id: int, confidence: float, position: np.ndarray, frame_num: int):
-        """Update quality metrics for a track"""
-        
-        # Track first appearance
         if track_id not in self.track_first_seen:
             self.track_first_seen[track_id] = frame_num
         
-        # Update age and last seen
         self.track_age[track_id] += 1
         self.last_update[track_id] = frame_num
         
-        # Update confidence history
         self.confidence_history[track_id].append(confidence)
         if len(self.confidence_history[track_id]) > self.stability_window:
             self.confidence_history[track_id].popleft()
         
-        # Calculate position variance
         if track_id in self.position_variance:
             if len(self.position_variance[track_id]) >= 3:
                 recent_positions = self.position_variance[track_id][-3:]
@@ -170,17 +154,12 @@ class TrackQualityMonitor:
             self.position_variance[track_id] = [position]
             variance = 0.0
         
-        # Keep position history manageable
         if len(self.position_variance[track_id]) > self.stability_window:
             self.position_variance[track_id].pop(0)
         
-        # Calculate stability score
         self._calculate_stability_score(track_id, variance)
     
     def _calculate_stability_score(self, track_id: int, position_variance: float):
-        """Calculate overall stability score for track"""
-        
-        # Confidence stability (high = consistent confidence)
         confidences = list(self.confidence_history[track_id])
         if len(confidences) > 1:
             conf_mean = np.mean(confidences)
@@ -189,32 +168,24 @@ class TrackQualityMonitor:
             conf_mean = confidences[0] if confidences else 0.5
             conf_stability = 0.5
         
-        # Motion stability (low variance = stable motion)
         motion_stability = 1.0 / (1.0 + position_variance / 100.0)
-        
-        # Age factor (older tracks are more stable)
         age_factor = min(1.0, self.track_age[track_id] / 20.0)
         
-        # Combined stability score
         stability = conf_mean * 0.4 + conf_stability * 0.3 + motion_stability * 0.2 + age_factor * 0.1
         self.stability_scores[track_id] = stability
     
     def get_track_stability(self, track_id: int) -> float:
-        """Get stability score for track (0.0 = unstable, 1.0 = very stable)"""
         return self.stability_scores.get(track_id, 0.0)
     
     def is_new_track(self, track_id: int, frame_num: int, newness_threshold: int = 5) -> bool:
-        """Check if track is newly created"""
         if track_id not in self.track_first_seen:
             return True
         return (frame_num - self.track_first_seen[track_id]) <= newness_threshold
     
     def is_unstable_track(self, track_id: int, stability_threshold: float = 0.4) -> bool:
-        """Check if track has poor quality/stability"""
         return self.get_track_stability(track_id) < stability_threshold
     
     def cleanup_old_tracks(self, active_track_ids: set, frame_num: int, max_age: int = 50):
-        """Clean up tracks that haven't been seen recently"""
         to_remove = []
         for track_id in list(self.last_update.keys()):
             if track_id not in active_track_ids:
@@ -225,7 +196,6 @@ class TrackQualityMonitor:
             self._remove_track(track_id)
     
     def _remove_track(self, track_id: int):
-        """Remove all data for a track"""
         self.confidence_history.pop(track_id, None)
         self.position_variance.pop(track_id, None)
         self.track_age.pop(track_id, None)
@@ -240,7 +210,6 @@ class MotionAwareMemory:
     def __init__(self, memory_size=15):
         self.memory_size = memory_size
         
-        # Memory banks per track
         self.feature_memory = defaultdict(deque)
         self.position_memory = defaultdict(deque)
         self.bbox_memory = defaultdict(deque)
@@ -249,32 +218,26 @@ class MotionAwareMemory:
     
     def update_track_memory(self, track_id: int, feature: np.ndarray, position: np.ndarray, 
                            bbox: np.ndarray, mask: np.ndarray, confidence: float):
-        """Update memory for track"""
-        
         self.feature_memory[track_id].append(feature)
         self.position_memory[track_id].append(position)
         self.bbox_memory[track_id].append(bbox)
         self.mask_memory[track_id].append(mask)
         self.confidence_memory[track_id].append(confidence)
         
-        # Maintain memory size
         for memory_bank in [self.feature_memory, self.position_memory, self.bbox_memory,
                            self.mask_memory, self.confidence_memory]:
             if len(memory_bank[track_id]) > self.memory_size:
                 memory_bank[track_id].popleft()
     
     def predict_next_position(self, track_id: int) -> Optional[np.ndarray]:
-        """Predict next position using motion model"""
         if track_id not in self.position_memory or len(self.position_memory[track_id]) < 2:
             return None
         
         positions = list(self.position_memory[track_id])
         
-        # Simple linear prediction
         if len(positions) >= 2:
             velocity = positions[-1] - positions[-2]
-            # Apply reasonable speed limit
-            max_speed = 30.0  # pixels per frame
+            max_speed = 30.0
             speed = np.linalg.norm(velocity)
             if speed > max_speed:
                 velocity = velocity / speed * max_speed
@@ -284,7 +247,6 @@ class MotionAwareMemory:
         return positions[-1]
     
     def get_recent_features(self, track_id: int, n_recent: int = 3) -> List[np.ndarray]:
-        """Get recent features for similarity comparison"""
         if track_id not in self.feature_memory:
             return []
         
@@ -292,14 +254,13 @@ class MotionAwareMemory:
         return features[-n_recent:] if len(features) >= n_recent else features
     
     def cleanup_track(self, track_id: int):
-        """Remove track from memory"""
         for memory_bank in [self.feature_memory, self.position_memory, self.bbox_memory,
                            self.mask_memory, self.confidence_memory]:
             memory_bank.pop(track_id, None)
 
 
 class EnhancedReIDPipeline:
-    """Enhanced ReID Pipeline with Intelligent Track Assignment + STABILITY CONTROLS"""
+    """Enhanced ReID Pipeline with MegaDescriptor RGB+Depth embeddings"""
     
     def __init__(self, config):
         self.config = config
@@ -314,6 +275,11 @@ class EnhancedReIDPipeline:
         self.depth_pipeline = None
         self.setup_depth_anything()
         
+        # Initialize MegaDescriptor
+        self.megadescriptor_model = None
+        self.megadescriptor_processor = None
+        self.setup_megadescriptor()
+        
         # Core components
         self.memory = MotionAwareMemory(
             memory_size=getattr(config, 'samurai_memory_size', 15)
@@ -322,16 +288,16 @@ class EnhancedReIDPipeline:
             stability_window=getattr(config, 'quality_stability_window', 10)
         )
         
-        # NEW: Stability management
+        # Stability management
         self.stability_manager = TrackStabilityManager(
             cooling_period=getattr(config, 'cooling_period', 10),
             oscillation_threshold=getattr(config, 'oscillation_threshold', 3)
         )
         
-        # Configuration parameters with HYSTERESIS
+        # Configuration parameters
         self.similarity_threshold = getattr(config, 'reid_similarity_threshold', 0.3)
         self.initial_assignment_threshold = getattr(config, 'initial_assignment_threshold', 0.5)
-        self.reassignment_threshold = getattr(config, 'reassignment_threshold', 0.7)  # Higher bar for stealing
+        self.reassignment_threshold = getattr(config, 'reassignment_threshold', 0.7)
         
         self.motion_distance_threshold = getattr(config, 'motion_distance_threshold', 150)
         self.stability_threshold = getattr(config, 'track_stability_threshold', 0.4)
@@ -347,12 +313,10 @@ class EnhancedReIDPipeline:
         self.current_masks = []
         self._last_depth_map = None
         
-        print(f"🎯 Enhanced ReID Pipeline initialized with STABILITY CONTROLS")
+        print(f"🎯 Enhanced ReID Pipeline initialized with MegaDescriptor RGB+Depth")
         print(f"   SAM model: {self.sam_model_type or 'disabled'}")
-        print(f"   Initial assignment threshold: {self.initial_assignment_threshold}")
-        print(f"   Reassignment threshold: {self.reassignment_threshold}")
-        print(f"   Cooling period: {getattr(config, 'cooling_period', 10)} frames")
-        print(f"   Oscillation prevention: ENABLED")
+        print(f"   MegaDescriptor: {'enabled' if self.megadescriptor_model else 'disabled'}")
+        print(f"   Embedding size: 64 (32 RGB + 32 Depth)")
     
     def setup_sam_model(self):
         """Initialize SAM model"""
@@ -407,6 +371,24 @@ class EnhancedReIDPipeline:
         except Exception as e:
             print(f"❌ Depth Anything failed: {e}")
     
+    def setup_megadescriptor(self):
+        """Initialize MegaDescriptor model"""
+        if not MEGADESCRIPTOR_AVAILABLE:
+            print("❌ MegaDescriptor not available")
+            print("   Install with: pip install transformers>=4.35.0")
+            return
+            
+        try:
+            self.megadescriptor_processor = AutoProcessor.from_pretrained("BVRA/MegaDescriptor-L-384")
+            self.megadescriptor_model = AutoModel.from_pretrained("BVRA/MegaDescriptor-L-384")
+            self.megadescriptor_model.to(self.device)
+            self.megadescriptor_model.eval()
+            print("✅ MegaDescriptor-L-384 loaded")
+        except Exception as e:
+            print(f"❌ MegaDescriptor failed: {e}")
+            print("   Ensure you have internet connection for first download")
+            print("   Model size: ~1.5GB - may take time to download")
+    
     def estimate_depth_full_image(self, frame: np.ndarray) -> np.ndarray:
         """Estimate depth map for entire image"""
         if not self.depth_pipeline:
@@ -433,7 +415,7 @@ class EnhancedReIDPipeline:
             return np.zeros_like(frame[:,:,0])
     
     def segment_with_sam(self, frame: np.ndarray, bbox: np.ndarray) -> Tuple[np.ndarray, float]:
-        """Segment using SAM with bbox prompt"""
+        """Segment using SAM with bbox center as prompt"""
         if not self.sam_predictor:
             h, w = frame.shape[:2]
             return np.zeros((h, w), dtype=bool), 0.0
@@ -474,95 +456,135 @@ class EnhancedReIDPipeline:
             h, w = frame.shape[:2]
             return np.zeros((h, w), dtype=bool), 0.0
     
-    def extract_visual_features(self, frame: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        """Extract visual features from masked region"""
+    def extract_megadescriptor_features(self, image: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        """Extract MegaDescriptor features from masked image"""
+        if not self.megadescriptor_model or not self.megadescriptor_processor:
+            return np.random.rand(32) * 0.01
+        
         try:
             mask = mask.astype(bool)
             
             if not np.any(mask):
-                return np.random.rand(64) * 0.01
+                return np.random.rand(32) * 0.01
             
-            features = []
+            # Apply mask - ROBUST method that avoids boolean indexing issues
+            masked_image = image.copy()
             
-            # Color features
-            masked_region = frame.copy()
-            masked_region[~mask] = 0
-            
-            # RGB histograms
-            for channel in range(3):
-                hist = cv2.calcHist([masked_region], [channel], mask.astype(np.uint8), [8], [0, 256])
-                features.extend(hist.flatten())
-            
-            # Texture features  
-            gray = cv2.cvtColor(masked_region, cv2.COLOR_BGR2GRAY)
-            
-            if np.any(mask):
-                grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-                grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-                
-                features.extend([
-                    np.mean(grad_x[mask]),
-                    np.std(grad_x[mask]),
-                    np.mean(grad_y[mask]),
-                    np.std(grad_y[mask])
-                ])
+            if len(masked_image.shape) == 3:
+                # RGB image - use where instead of boolean indexing
+                background_mask = np.expand_dims(~mask, axis=2)  # Shape: (H, W, 1)
+                background_mask = np.repeat(background_mask, 3, axis=2)  # Shape: (H, W, 3)
+                masked_image = np.where(background_mask, 255, masked_image)
             else:
-                features.extend([0, 0, 0, 0])
+                # Grayscale image
+                masked_image = np.where(~mask, 255, masked_image)
             
-            # Shape features
-            contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            # Convert to PIL Image
+            if len(masked_image.shape) == 3:
+                pil_image = Image.fromarray(cv2.cvtColor(masked_image.astype(np.uint8), cv2.COLOR_BGR2RGB))
+            else:
+                # For depth map (grayscale) - convert to 3-channel
+                depth_3channel = cv2.cvtColor(masked_image.astype(np.uint8), cv2.COLOR_GRAY2RGB)
+                pil_image = Image.fromarray(depth_3channel)
             
-            if contours:
-                contour = max(contours, key=cv2.contourArea)
-                area = cv2.contourArea(contour)
-                perimeter = cv2.arcLength(contour, True)
-                
-                if perimeter > 0:
-                    circularity = 4 * np.pi * area / (perimeter * perimeter)
+            # Process with MegaDescriptor
+            inputs = self.megadescriptor_processor(images=pil_image, return_tensors="pt")
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            
+            with torch.no_grad():
+                outputs = self.megadescriptor_model(**inputs)
+                # Get pooled output and take first 32 dimensions
+                if hasattr(outputs, 'pooler_output'):
+                    features = outputs.pooler_output.cpu().numpy().flatten()[:32]
+                elif hasattr(outputs, 'last_hidden_state'):
+                    # Alternative for models without pooler_output
+                    features = outputs.last_hidden_state.mean(dim=1).cpu().numpy().flatten()[:32]
                 else:
-                    circularity = 0
-                
-                x, y, w, h = cv2.boundingRect(contour)
-                aspect_ratio = w / h if h > 0 else 0
-                
-                features.extend([area / 10000, perimeter / 1000, circularity, aspect_ratio])
-            else:
-                features.extend([0, 0, 0, 0])
+                    # Fallback
+                    features = outputs[0].mean(dim=1).cpu().numpy().flatten()[:32]
             
-            # Normalize
-            features = np.array(features, dtype=np.float32)
-            features = np.nan_to_num(features, nan=0.0, posinf=1.0, neginf=-1.0)
-            
+            # Normalize (avoid division by zero)
             norm = np.linalg.norm(features)
-            if norm > 0:
+            if norm > 1e-8:
                 features = features / norm
+            else:
+                # If norm is too small, return small random features
+                features = np.random.rand(32) * 0.01
             
             return features
             
         except Exception as e:
-            print(f"❌ Feature extraction failed: {e}")
-            return np.random.rand(64) * 0.01
+            print(f"❌ MegaDescriptor feature extraction failed: {e}")
+            return np.random.rand(32) * 0.01
     
-    def calculate_similarity(self, feature1: np.ndarray, feature2: np.ndarray) -> float:
-        """Calculate similarity between features"""
-        cos_sim = np.dot(feature1, feature2) / (np.linalg.norm(feature1) * np.linalg.norm(feature2) + 1e-8)
-        l2_dist = np.linalg.norm(feature1 - feature2)
-        l2_sim = 1.0 / (1.0 + l2_dist)
+    def create_combined_embedding(self, rgb_image: np.ndarray, depth_image: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        """Create 64-dimensional embedding: 32 RGB + 32 Depth"""
+        # Extract RGB features (32 dim)
+        rgb_features = self.extract_megadescriptor_features(rgb_image, mask)
         
-        return 0.7 * cos_sim + 0.3 * l2_sim
+        # Extract Depth features (32 dim)
+        depth_features = self.extract_megadescriptor_features(depth_image, mask)
+        
+        # Combine into 64-dimensional embedding
+        combined_embedding = np.concatenate([rgb_features, depth_features])
+        
+        return combined_embedding
     
-    def find_best_reassignment_candidate(self, query_feature: np.ndarray, query_position: np.ndarray, 
-                                       exclude_track_id: int, current_track_ids: set) -> Tuple[int, float]:
-        """Find best memory track for reassignment with STABILITY CONTROLS"""
+    def calculate_similarity(self, embedding1: np.ndarray, embedding2: np.ndarray) -> float:
+        """Calculate cosine similarity between 64-dim embeddings with NaN protection"""
+        try:
+            # Check for NaN or invalid values
+            if np.any(np.isnan(embedding1)) or np.any(np.isnan(embedding2)):
+                return 0.0
+            
+            if np.any(np.isinf(embedding1)) or np.any(np.isinf(embedding2)):
+                return 0.0
+            
+            # Calculate norms
+            norm1 = np.linalg.norm(embedding1)
+            norm2 = np.linalg.norm(embedding2)
+            
+            # Check for zero norms
+            if norm1 < 1e-8 or norm2 < 1e-8:
+                return 0.0
+            
+            # Calculate cosine similarity
+            cos_sim = np.dot(embedding1, embedding2) / (norm1 * norm2)
+            
+            # Ensure result is valid
+            if np.isnan(cos_sim) or np.isinf(cos_sim):
+                return 0.0
+            
+            # Clamp to valid range
+            cos_sim = np.clip(cos_sim, -1.0, 1.0)
+            
+            return float(cos_sim)
+            
+        except Exception as e:
+            print(f"❌ Similarity calculation failed: {e}")
+            return 0.0
+    
+    def find_best_track_match(self, query_embedding: np.ndarray, query_position: np.ndarray, 
+                             exclude_track_id: int, current_track_ids: set, max_racers: int = 9) -> Tuple[int, float]:
+        """Find best memory track for assignment - limited to max_racers"""
         
         best_track_id = -1
         best_score = 0.0
         
-        for track_id in self.memory.feature_memory:
+        # Get all existing tracks from memory
+        existing_tracks = list(self.memory.feature_memory.keys())
+        
+        # If we have reached max racers, only reassign to existing tracks
+        if len(existing_tracks) >= max_racers:
+            candidate_tracks = existing_tracks
+        else:
+            candidate_tracks = existing_tracks
+        
+        for track_id in candidate_tracks:
             if track_id == exclude_track_id:
                 continue
                 
-            # CRITICAL: Avoid conflicts - don't assign to currently active tracks
+            # Avoid conflicts with currently active tracks
             if track_id in current_track_ids:
                 continue
             
@@ -571,8 +593,8 @@ class EnhancedReIDPipeline:
             if not recent_features:
                 continue
             
-            # Calculate visual similarity
-            visual_similarities = [self.calculate_similarity(query_feature, feat) for feat in recent_features]
+            # Calculate similarity with recent embeddings
+            visual_similarities = [self.calculate_similarity(query_embedding, feat) for feat in recent_features]
             best_visual_sim = max(visual_similarities)
             
             # Calculate motion consistency
@@ -581,21 +603,25 @@ class EnhancedReIDPipeline:
                 distance = np.linalg.norm(query_position - predicted_pos)
                 motion_score = 1.0 / (1.0 + distance / self.motion_distance_threshold)
             else:
-                motion_score = 0.5  # Neutral score if no motion prediction
+                motion_score = 0.5
+
+            if predicted_pos is not None:
+                distance = np.linalg.norm(query_position - predicted_pos)
+                print(f"Track {track_id}: predicted vs actual distance = {distance:.1f} pixels")
             
             # Get track stability
             stability = self.quality_monitor.get_track_stability(track_id)
             
-            # STABILITY FACTORS
+            # Stability factors
             stability_bonus = self.stability_manager.get_stability_bonus(track_id)
             stability_penalty = self.stability_manager.get_stability_penalty(track_id)
             
-            # Combined score with stability
-            combined_score = (best_visual_sim * 0.6 + motion_score * 0.25 + stability * 0.15 
+            # Combined score
+            combined_score = (best_visual_sim * 0.9 + motion_score * 0.05 + stability * 0.05 
                             + stability_bonus - stability_penalty)
             
-            # Use appropriate threshold
-            threshold = self.reassignment_threshold  # Higher bar for reassignment
+            # Use reassignment threshold
+            threshold = self.reassignment_threshold
             
             if combined_score > best_score and best_visual_sim > threshold:
                 best_score = combined_score
@@ -604,7 +630,7 @@ class EnhancedReIDPipeline:
         return best_track_id, best_score
     
     def intelligent_track_assignment(self, detections, reid_features):
-        """Core intelligent track assignment logic WITH STABILITY CONTROLS"""
+        """Core intelligent track assignment logic for limited racers"""
         
         if not sv or len(detections) == 0 or len(reid_features) == 0:
             return detections
@@ -612,7 +638,7 @@ class EnhancedReIDPipeline:
         if not hasattr(detections, 'tracker_id'):
             return detections
         
-        # Properly copy supervision Detections object
+        # Copy detections
         enhanced_detections = sv.Detections(
             xyxy=detections.xyxy.copy(),
             confidence=detections.confidence.copy() if hasattr(detections, 'confidence') else None,
@@ -621,8 +647,9 @@ class EnhancedReIDPipeline:
         )
         
         reassignments_this_frame = 0
+        max_racers = 9  # Fixed number of racers
         
-        # Get set of currently active track IDs to avoid conflicts
+        # Get set of currently active track IDs
         current_track_ids = set(enhanced_detections.tracker_id[enhanced_detections.tracker_id >= 0])
         
         # Find candidates for reassignment
@@ -633,17 +660,16 @@ class EnhancedReIDPipeline:
                 continue
 
             if i >= len(reid_features):
-                print(f"⚠️ Missing ReID feature for detection index {i}, skipping")
                 continue
             
-            # STABILITY CHECK: Skip if track is locked in cooling period
+            # Skip if locked in cooling period
             if self.stability_manager.is_track_locked(track_id):
                 self.stability_locks += 1
                 continue
             
             bbox = detections.xyxy[i]
             center = np.array([(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2])
-            feature = reid_features[i]
+            embedding = reid_features[i]
             
             should_check = False
             reason = ""
@@ -653,7 +679,7 @@ class EnhancedReIDPipeline:
                 should_check = True
                 reason = "new_track"
             
-            # Check if unstable track (but only if not locked)
+            # Check if unstable track
             elif self.quality_monitor.is_unstable_track(track_id, self.stability_threshold):
                 should_check = True
                 reason = "unstable_track"
@@ -663,26 +689,26 @@ class EnhancedReIDPipeline:
                     'index': i,
                     'track_id': track_id,
                     'position': center,
-                    'feature': feature,
+                    'embedding': embedding,
                     'reason': reason
                 })
         
-        # Process reassignment candidates with STABILITY CONTROLS
+        # Process reassignment candidates
         for candidate in candidates:
             i = candidate['index']
             current_track_id = candidate['track_id']
             position = candidate['position']
-            feature = candidate['feature']
+            embedding = candidate['embedding']
             reason = candidate['reason']
             
             # Find best memory match
-            best_match_id, best_score = self.find_best_reassignment_candidate(
-                feature, position, exclude_track_id=current_track_id, 
-                current_track_ids=current_track_ids
+            best_match_id, best_score = self.find_best_track_match(
+                embedding, position, exclude_track_id=current_track_id, 
+                current_track_ids=current_track_ids, max_racers=max_racers
             )
             
-            # Decide on reassignment with higher threshold
-            min_reassignment_score = 0.6  # Higher threshold for reassignment
+            # Decide on reassignment
+            min_reassignment_score = 0.6
             
             if best_match_id >= 0 and best_score > min_reassignment_score:
                 # Check for oscillation
@@ -692,25 +718,24 @@ class EnhancedReIDPipeline:
                 
                 if is_oscillating:
                     self.oscillations_prevented += 1
-                    print(f"🚫 OSCILLATION PREVENTED: Track #{current_track_id} → #{best_match_id}")
                     continue
                 
                 # Safe to reassign
                 enhanced_detections.tracker_id[i] = best_match_id
-                current_track_ids.remove(current_track_id)  # Remove old
-                current_track_ids.add(best_match_id)  # Add new
+                current_track_ids.remove(current_track_id)
+                current_track_ids.add(best_match_id)
                 
                 self.reassignment_count += 1
                 reassignments_this_frame += 1
                 
-                print(f"✅ STABLE REASSIGNMENT: Track #{current_track_id} → #{best_match_id} ({reason}, score: {best_score:.3f})")
+                print(f"✅ REID MATCH: Track #{current_track_id} → #{best_match_id} ({reason}, score: {best_score:.3f})")
                 
-                # Clean up old track if it was very new
+                # Clean up old track if very new
                 if self.quality_monitor.is_new_track(current_track_id, self.frame_count, 2):
                     self.cleanup_track(current_track_id)
         
         if reassignments_this_frame > 0:
-            print(f"📊 Frame {self.frame_count}: {reassignments_this_frame} intelligent reassignments")
+            print(f"📊 Frame {self.frame_count}: {reassignments_this_frame} MegaDescriptor reassignments")
         
         return enhanced_detections
     
@@ -719,14 +744,19 @@ class EnhancedReIDPipeline:
         self.memory.cleanup_track(track_id)
         self.quality_monitor._remove_track(track_id)
     
-    def enhance_tracking(self, detections, reid_features, depth_stats=None):
-        """Main entry point for enhanced tracking"""
+    def enhance_tracking(self, detections, reid_features, *args, **kwargs):
+        """Main entry point for enhanced tracking - flexible interface for main.py compatibility"""
+        
+        # Handle optional arguments
+        depth_stats = args[0] if len(args) > 0 else kwargs.get('depth_stats', None)
+        tracked_horses = args[1] if len(args) > 1 else kwargs.get('tracked_horses', None)
+        frame_info = args[2] if len(args) > 2 else kwargs.get('frame_info', None)
         
         if not sv or len(detections) == 0 or len(reid_features) == 0:
             return detections
         
         self.frame_count += 1
-        self.stability_manager.advance_frame()  # NEW: Advance stability manager
+        self.stability_manager.advance_frame()
         
         # Update track quality monitoring
         if hasattr(detections, 'tracker_id'):
@@ -738,18 +768,18 @@ class EnhancedReIDPipeline:
                     
                     self.quality_monitor.update_track_quality(track_id, confidence, center, self.frame_count)
         
-        # Apply intelligent track assignment with STABILITY CONTROLS
+        # Apply intelligent track assignment
         enhanced_detections = self.intelligent_track_assignment(detections, reid_features)
         
         # Cleanup old tracks
         active_track_ids = set(enhanced_detections.tracker_id[enhanced_detections.tracker_id >= 0])
         self.quality_monitor.cleanup_old_tracks(active_track_ids, self.frame_count)
-        self.stability_manager.cleanup_old_tracks(active_track_ids)  # NEW: Cleanup stability data
+        self.stability_manager.cleanup_old_tracks(active_track_ids)
         
         return enhanced_detections
     
     def process_frame(self, frame: np.ndarray, detections) -> Tuple:
-        """Process frame with enhanced SAM and ReID"""
+        """Process frame with SAM segmentation and MegaDescriptor embeddings"""
         
         # Estimate depth
         depth_map = self.estimate_depth_full_image(frame)
@@ -757,7 +787,7 @@ class EnhancedReIDPipeline:
         
         # Process each detection
         rgb_crops, depth_crops = [], []
-        features = []
+        embeddings = []
         depth_stats = []
         self.current_masks = []
         
@@ -767,7 +797,7 @@ class EnhancedReIDPipeline:
         for i, bbox in enumerate(detections.xyxy):
             track_id = detections.tracker_id[i] if hasattr(detections, 'tracker_id') and i < len(detections.tracker_id) else -1
             
-            # Segment with SAM
+            # Segment with SAM using bbox center
             mask, confidence = self.segment_with_sam(frame, bbox)
             self.current_masks.append(mask)
             
@@ -790,9 +820,9 @@ class EnhancedReIDPipeline:
                 rgb_crops.append(rgb_crop)
                 depth_crops.append(depth_crop)
                 
-                # Extract features
-                feature = self.extract_visual_features(frame, mask)
-                features.append(feature)
+                # Create combined 64-dim embedding (32 RGB + 32 Depth)
+                embedding = self.create_combined_embedding(frame, depth_map, mask)
+                embeddings.append(embedding)
                 
                 # Depth stats
                 depth_stats.append({
@@ -805,9 +835,9 @@ class EnhancedReIDPipeline:
                 # Update memory if valid track
                 if track_id >= 0:
                     center = np.array([(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2])
-                    self.memory.update_track_memory(track_id, feature, center, bbox, mask, confidence)
+                    self.memory.update_track_memory(track_id, embedding, center, bbox, mask, confidence)
         
-        return rgb_crops, depth_crops, depth_map, np.array(features), depth_stats
+        return rgb_crops, depth_crops, depth_map, np.array(embeddings), depth_stats
     
     def get_current_masks(self):
         """Get current segmentation masks"""
@@ -818,10 +848,9 @@ class EnhancedReIDPipeline:
         return self.reassignment_count
     
     def get_tracking_info(self):
-        """Get tracking information with stability stats"""
+        """Get tracking information"""
         active_tracks = len(self.memory.feature_memory)
         
-        # Get motion predictions
         motion_predictions = {}
         for track_id in self.memory.feature_memory.keys():
             pred_pos = self.memory.predict_next_position(track_id)

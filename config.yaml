@@ -1,8 +1,8 @@
-# Enhanced ReID Configuration
-# Intelligent track assignment with quality monitoring
+# Enhanced ReID Configuration with MegaDescriptor
+# RGB+Depth embeddings for track re-identification
 
 # Video and output settings
-video_path: inputs/horse_11.mp4
+video_path: inputs/horse_9.mp4
 output_path: null
 display: false
 
@@ -16,32 +16,42 @@ horse_pose_estimator: superanimal
 sam_model: sam2
 
 # Confidence thresholds
-confidence_human_detection: 0.7
-confidence_horse_detection: 0.8
+confidence_human_detection: 0.5
+confidence_horse_detection: 0.5
 confidence_human_pose: 0.5
 confidence_horse_pose_superanimal: 0.5
 confidence_horse_pose_vitpose: 0.5
 
 # Basic settings
 jockey_overlap_threshold: 0.4
-max_frames: 
+max_frames: 1000 #null
 device: cuda
 
 # ENHANCED REID PIPELINE SETTINGS
 enable_reid_pipeline: true
-reid_similarity_threshold: 0.3
+reid_similarity_threshold: 0.6
+
+# MegaDescriptor settings
+enable_megadescriptor: true
+max_racers: 9  # Fixed number of racers
 
 # Track Quality Monitoring
-track_stability_threshold: 0.3    # Threshold for unstable tracks (lower = more aggressive reassignment)
+track_stability_threshold: 0.3    # Threshold for unstable tracks
 track_newness_threshold: 5        # Frames to consider track "new"
 quality_stability_window: 10      # Window for calculating stability metrics
 
 # Memory and Motion Settings
 samurai_memory_size: 10           # Memory size for track history
-motion_distance_threshold: 200    # Motion prediction threshold (pixels)
+motion_distance_threshold: 50    # Motion prediction threshold (pixels)
+
+# Stability Controls
+cooling_period: 5                # Frames to lock after reassignment
+oscillation_threshold: 3          # Max oscillations before penalty
+initial_assignment_threshold: 0.5 # Easy initial assignment
+reassignment_threshold: 0.7       # Hard to steal existing tracks
 
 # Components
 enable_depth_anything: true
 
 # Performance Settings
-max_tracks_per_frame: 11          # Limit to expected number of horses
+max_tracks_per_frame: 9          # Limit to expected number of horses

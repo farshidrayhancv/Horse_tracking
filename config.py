@@ -77,7 +77,7 @@ class Config:
         self.enable_depth_anything = True
         
         # ===== PERFORMANCE TUNING =====
-        self.max_tracks_per_frame = 11  # Limit to expected number of horses
+        self.max_tracks_per_frame = 9  # Limit to expected number of horses
         
         # Load from file if provided
         if config_file:
@@ -264,7 +264,7 @@ class Config:
             'enable_depth_anything': True,
             
             '# Performance': None,
-            'max_tracks_per_frame': 11
+            'max_tracks_per_frame': 9
         }
         
         try:
