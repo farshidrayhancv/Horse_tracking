@@ -28,13 +28,6 @@ class Config:
             'none': 'No horse pose estimation'
         }
         
-        # SAM model selection
-        self.SAM_MODELS = {
-            'mobilesam': 'MobileSAM (lightweight, faster)',
-            'sam2': 'SAM2 (Meta\'s latest, more accurate)',
-            'none': 'No segmentation (simple crops only)'
-        }
-        
         # ===== BASIC CONFIGURATION =====
         self.video_path = None
         self.output_path = None
@@ -47,7 +40,6 @@ class Config:
         self.horse_detector = 'rtdetr'
         self.human_pose_estimator = 'vitpose'
         self.horse_pose_estimator = 'superanimal'
-        self.sam_model = 'sam2'
         
         # ===== CONFIDENCE THRESHOLDS =====
         self.confidence_human_detection = 0.5
@@ -59,25 +51,41 @@ class Config:
         # ===== BASIC SETTINGS =====
         self.jockey_overlap_threshold = 0.4
         
-        # ===== ENHANCED REID PIPELINE SETTINGS =====
-        # Core ReID Pipeline
-        self.enable_reid_pipeline = True
-        self.reid_similarity_threshold = 0.3
+        # ===== BOOSTTRACK CONFIGURATION =====
+        self.tracker_type = 'boosttrack'  # 'boosttrack' or 'bytetrack'
         
-        # Enhanced Track Quality Monitoring
-        self.track_stability_threshold = 0.4  # Threshold for considering track unstable
-        self.track_newness_threshold = 5      # Frames to consider track "new"
-        self.quality_stability_window = 10    # Window for calculating stability metrics
+        # BoostTrack parameters
+        self.boosttrack_config = {
+            'max_age': 60,
+            'min_hits': 3,
+            'det_thresh': 0.6,
+            'iou_threshold': 0.3,
+            'use_ecc': True,
+            'min_box_area': 10,
+            'aspect_ratio_thresh': 1.6,
+            'cmc_method': 'ecc',
+            'lambda_iou': 0.5,
+            'lambda_mhd': 0.25,
+            'lambda_shape': 0.25,
+            'use_dlo_boost': True,
+            'use_duo_boost': True,
+            'dlo_boost_coef': 0.65,
+            's_sim_corr': False,
+            'use_rich_s': False,
+            'use_sb': False,
+            'use_vt': False,
+            'with_reid': False
+        }
         
-        # Memory and Motion Settings
-        self.samurai_memory_size = 15
-        self.motion_distance_threshold = 150  # Lower for broadcast footage
-        
-        # Component toggles
-        self.enable_depth_anything = True
+        # ===== SIGLIP CLASSIFICATION =====
+        self.enable_siglip_classification = True
+        self.reference_image_path = "horse_9.png"
+        self.max_horses = 9
+        self.max_jockeys = 9
+        self.siglip_confidence_threshold = 0.8
         
         # ===== PERFORMANCE TUNING =====
-        self.max_tracks_per_frame = 9  # Limit to expected number of horses
+        self.max_tracks_per_frame = 9
         
         # Load from file if provided
         if config_file:
@@ -110,11 +118,9 @@ class Config:
             
             for key, value in config_data.items():
                 if hasattr(self, key):
-                    # Setting exists in class - update it
                     setattr(self, key, value)
                     loaded_settings.append(key)
                 else:
-                    # NEW setting from YAML - add it dynamically
                     setattr(self, key, value)
                     new_settings.append(key)
             
@@ -126,62 +132,57 @@ class Config:
                 for setting in new_settings:
                     print(f"      - {setting}: {getattr(self, setting)}")
             
-            # Show Enhanced ReID status
-            if getattr(self, 'enable_reid_pipeline', False):
-                sam_model = getattr(self, 'sam_model', 'none')
-                print(f"   🎯 Enhanced ReID Pipeline: ENABLED with {sam_model.upper()}")
-                print(f"   🧠 Intelligent Track Assignment: Quality-based reassignment")
-                print(f"   📊 Track Stability Monitoring: {getattr(self, 'track_stability_threshold', 'not set')}")
+            # Show tracking method
+            tracker_type = getattr(self, 'tracker_type', 'bytetrack')
+            print(f"   🎯 Tracking Method: {tracker_type.upper()}")
+            
+            if tracker_type == 'boosttrack':
+                boosttrack_config = getattr(self, 'boosttrack_config', {})
+                print(f"   ⚡ BoostTrack Config: {len(boosttrack_config)} parameters")
+            
+            # Show SigLIP classification status
+            if getattr(self, 'enable_siglip_classification', False):
+                ref_image = getattr(self, 'reference_image_path', 'not set')
+                max_horses = getattr(self, 'max_horses', 9)
+                max_jockeys = getattr(self, 'max_jockeys', 9)
+                print(f"   🔍 SigLIP Classification: ENABLED")
+                print(f"   📷 Reference Image: {ref_image}")
+                print(f"   🐴 Max Horses: {max_horses}, Max Jockeys: {max_jockeys}")
             else:
-                print(f"   🎯 Enhanced ReID Pipeline: DISABLED")
+                print(f"   🔍 SigLIP Classification: DISABLED")
                 
         except Exception as e:
             print(f"❌ Error loading config file: {e}")
             import traceback
             traceback.print_exc()
     
-    def enable_enhanced_reid(self):
-        """Enable enhanced ReID features with optimal settings"""
-        self.enable_reid_pipeline = True
-        self.sam_model = 'sam2'
-        self.reid_similarity_threshold = 0.3
-        self.track_stability_threshold = 0.4
-        self.track_newness_threshold = 5
-        self.motion_distance_threshold = 150
-        self.enable_depth_anything = True
-        print("✅ Enhanced ReID features enabled")
-    
-    def disable_enhanced_reid(self):
-        """Disable enhanced ReID for faster processing"""
-        self.enable_reid_pipeline = False
-        self.sam_model = 'none'
-        self.enable_depth_anything = False
-        print("✅ Enhanced ReID features disabled")
-    
     def set_performance_mode(self, mode: str):
         """Set performance mode: 'speed', 'balanced', or 'accuracy'"""
         if mode == 'speed':
-            self.sam_model = 'mobilesam'
-            self.samurai_memory_size = 10
-            self.enable_depth_anything = False
-            self.motion_distance_threshold = 100
-            self.quality_stability_window = 5
+            self.boosttrack_config.update({
+                'track_high_thresh': 0.7,
+                'track_low_thresh': 0.2,
+                'track_buffer': 20,
+                'match_thresh': 0.7
+            })
             print("🚀 Performance mode: SPEED")
             
         elif mode == 'balanced':
-            self.sam_model = 'sam2'
-            self.samurai_memory_size = 15
-            self.enable_depth_anything = True
-            self.motion_distance_threshold = 150
-            self.quality_stability_window = 10
+            self.boosttrack_config.update({
+                'track_high_thresh': 0.6,
+                'track_low_thresh': 0.1,
+                'track_buffer': 30,
+                'match_thresh': 0.8
+            })
             print("⚖️ Performance mode: BALANCED")
             
         elif mode == 'accuracy':
-            self.sam_model = 'sam2'
-            self.samurai_memory_size = 20
-            self.enable_depth_anything = True
-            self.motion_distance_threshold = 200
-            self.quality_stability_window = 15
+            self.boosttrack_config.update({
+                'track_high_thresh': 0.5,
+                'track_low_thresh': 0.05,
+                'track_buffer': 50,
+                'match_thresh': 0.9
+            })
             print("🎯 Performance mode: ACCURACY")
             
         else:
@@ -194,34 +195,30 @@ class Config:
         print(f"   Horse detector: {self.HORSE_DETECTORS[self.horse_detector]}")
         print(f"   Human pose: {self.HUMAN_POSE_ESTIMATORS[self.human_pose_estimator]}")
         print(f"   Horse pose: {self.HORSE_POSE_ESTIMATORS[self.horse_pose_estimator]}")
-        print(f"   SAM model: {self.SAM_MODELS[self.sam_model]}")
         print(f"   Device: {self.device}")
         print(f"   Display: {self.display}")
         
-        # Enhanced ReID status
-        if getattr(self, 'enable_reid_pipeline', False):
-            print(f"\n🎯 Enhanced ReID Pipeline: ENABLED")
-            print(f"   Core Settings:")
-            print(f"   - SAM model: {getattr(self, 'sam_model', 'not set')}")
-            print(f"   - Similarity threshold: {getattr(self, 'reid_similarity_threshold', 'not set')}")
-            print(f"   - Memory size: {getattr(self, 'samurai_memory_size', 'not set')} frames")
-            
-            print(f"   Quality Monitoring:")
-            print(f"   - Stability threshold: {getattr(self, 'track_stability_threshold', 'not set')}")
-            print(f"   - Newness threshold: {getattr(self, 'track_newness_threshold', 'not set')} frames")
-            print(f"   - Stability window: {getattr(self, 'quality_stability_window', 'not set')} frames")
-            
-            print(f"   Motion Settings:")
-            print(f"   - Distance threshold: {getattr(self, 'motion_distance_threshold', 'not set')} pixels")
-            
-            print(f"   Components:")
-            print(f"   - Depth-Anything: {getattr(self, 'enable_depth_anything', 'not set')}")
-            
+        # Tracking status
+        tracker_type = getattr(self, 'tracker_type', 'bytetrack')
+        print(f"\n🎯 Tracking Method: {tracker_type.upper()}")
+        
+        if tracker_type == 'boosttrack':
+            print(f"   BoostTrack Settings:")
+            for key, value in self.boosttrack_config.items():
+                print(f"   - {key}: {value}")
+        
+        # SigLIP classification status
+        if getattr(self, 'enable_siglip_classification', False):
+            print(f"\n🔍 SigLIP Classification: ENABLED")
+            print(f"   Reference Image: {getattr(self, 'reference_image_path', 'not set')}")
+            print(f"   Max Horses: {getattr(self, 'max_horses', 9)}")
+            print(f"   Max Jockeys: {getattr(self, 'max_jockeys', 9)}")
+            print(f"   Confidence Threshold: {getattr(self, 'siglip_confidence_threshold', 0.3)}")
         else:
-            print(f"\n🎯 Enhanced ReID Pipeline: DISABLED")
+            print(f"\n🔍 SigLIP Classification: DISABLED")
     
-    def create_template_config(self, filename: str = "enhanced_config_template.yaml"):
-        """Create template config with enhanced ReID settings"""
+    def create_template_config(self, filename: str = "boosttrack_config_template.yaml"):
+        """Create template config with BoostTrack settings"""
         template = {
             '# Basic Settings': None,
             'video_path': 'inputs/your_video.mp4',
@@ -235,7 +232,6 @@ class Config:
             'horse_detector': 'rtdetr', 
             'human_pose_estimator': 'vitpose',
             'horse_pose_estimator': 'superanimal',
-            'sam_model': 'sam2',
             
             '# Confidence Thresholds': None,
             'confidence_human_detection': 0.5,
@@ -244,24 +240,29 @@ class Config:
             'confidence_horse_pose_superanimal': 0.5,
             'confidence_horse_pose_vitpose': 0.5,
             
-            '# Basic Settings': None,
-            'jockey_overlap_threshold': 0.4,
+            '# Tracking Method': None,
+            'tracker_type': 'boosttrack',
             
-            '# Enhanced ReID Pipeline': None,
-            'enable_reid_pipeline': True,
-            'reid_similarity_threshold': 0.3,
+            '# BoostTrack Configuration': None,
+            'boosttrack_config': {
+                'track_high_thresh': 0.6,
+                'track_low_thresh': 0.1,
+                'new_track_thresh': 0.7,
+                'track_buffer': 30,
+                'match_thresh': 0.8,
+                'proximity_thresh': 0.5,
+                'appearance_thresh': 0.25,
+                'cmc_method': 'sparseOptFlow',
+                'frame_rate': 25,
+                'lambda_': 0.98
+            },
             
-            '# Track Quality Monitoring': None,
-            'track_stability_threshold': 0.4,
-            'track_newness_threshold': 5,
-            'quality_stability_window': 10,
-            
-            '# Memory and Motion': None,
-            'samurai_memory_size': 15,
-            'motion_distance_threshold': 150,
-            
-            '# Components': None,
-            'enable_depth_anything': True,
+            '# SigLIP Classification': None,
+            'enable_siglip_classification': True,
+            'reference_image_path': 'horse_9.png',
+            'max_horses': 9,
+            'max_jockeys': 9,
+            'siglip_confidence_threshold': 0.3,
             
             '# Performance': None,
             'max_tracks_per_frame': 9
@@ -269,15 +270,20 @@ class Config:
         
         try:
             with open(filename, 'w') as f:
-                f.write("# Enhanced ReID Configuration Template\n")
-                f.write("# Intelligent track assignment with quality monitoring\n\n")
+                f.write("# BoostTrack + SigLIP Configuration Template\n")
+                f.write("# Advanced tracking with individual horse/jockey identification\n\n")
                 
                 for key, value in template.items():
                     if key.startswith('#'):
                         f.write(f"\n{key}\n")
                     elif value is not None:
-                        f.write(f"{key}: {value}\n")
+                        if isinstance(value, dict):
+                            f.write(f"{key}:\n")
+                            for sub_key, sub_value in value.items():
+                                f.write(f"  {sub_key}: {sub_value}\n")
+                        else:
+                            f.write(f"{key}: {value}\n")
                         
-            print(f"✅ Enhanced template config created: {filename}")
+            print(f"✅ BoostTrack template config created: {filename}")
         except Exception as e:
             print(f"❌ Error creating template: {e}")

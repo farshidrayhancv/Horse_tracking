@@ -108,7 +108,7 @@ class Visualizer:
                 
                 if head_pos:
                     cv2.putText(frame, f"J{track_id}", head_pos, 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, self.track_color, 2)
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, self.track_color, 5)
         
         return frame
     
@@ -176,7 +176,7 @@ class Visualizer:
                     method = pose_result.get('method', 'Horse')
                     prefix = "SA" if method == 'SuperAnimal' else "VP"
                     cv2.putText(frame, f"{prefix}{track_id}", head_pos, 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, self.track_color, 2)
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, self.track_color, 5)
         
         return frame
     
@@ -206,7 +206,7 @@ class Visualizer:
                             cv2.circle(frame, (x1+10, y1+10), 5, self.reid_color, -1)
                         
                         cv2.putText(frame, f"J{track_id}{reid_indicator}", (x1, y1-5), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.track_color, 2)
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.track_color, 5)
             
             # Horse detections with automatic track-based colors (triangles)
             if len(horse_detections) > 0:
@@ -224,7 +224,7 @@ class Visualizer:
                             cv2.circle(frame, (x1+10, y1+10), 5, self.reid_color, -1)
                         
                         cv2.putText(frame, f"H{track_id}{reid_indicator}", (x1, y1-5), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.track_color, 2)
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.track_color, 5)
                 
         except Exception as e:
             print(f"⚠️ Supervision annotation failed, using fallback: {e}")
@@ -236,7 +236,7 @@ class Visualizer:
                     color = self.get_track_color(track_id)
                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                     cv2.putText(frame, f"J{track_id}", (x1, y1-10), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, self.track_color, 2)
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, self.track_color, 5)
             
             if len(horse_detections) > 0:
                 for i, box in enumerate(horse_detections.xyxy):
@@ -245,7 +245,7 @@ class Visualizer:
                     color = self.get_track_color(track_id)
                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                     cv2.putText(frame, f"H{track_id}", (x1, y1-10), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, self.track_color, 2)
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, self.track_color, 5)
         
         return frame
     
@@ -265,7 +265,7 @@ class Visualizer:
                 
                 track_str = f" T{track_id}" if track_id >= 0 else ""
                 cv2.putText(frame, f"{method} {conf:.2f} ({kp_count}){track_str}", 
-                           (x1, y2+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                           (x1, y2+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 5)
         
         return frame
     
@@ -329,6 +329,6 @@ class Visualizer:
         
         for i, line in enumerate(info_lines):
             y_pos = 25 + i * 18
-            cv2.putText(frame, line, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.text_color, 1)
+            cv2.putText(frame, line, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.text_color, 5)
         
         return frame
