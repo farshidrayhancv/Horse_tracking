@@ -1,6 +1,6 @@
 """
-Enhanced SigLIP-based Horse/Jockey Classification
-Multi-image training with clustering and classifier
+Enhanced SigLIP-based Horse Classification with OCR Number Detection
+Uses OCR to detect horse numbers (0-9) instead of clustering
 """
 
 import cv2
@@ -8,7 +8,6 @@ import numpy as np
 import torch
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
-from sklearn.cluster import KMeans
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
@@ -20,47 +19,66 @@ except ImportError:
     sv = None
 
 try:
-    from transformers import AutoProcessor, SiglipVisionModel
+    from transformers import AutoProcessor, SiglipVisionModel, AutoProcessor, AutoModelForImageClassification
     SIGLIP_AVAILABLE = True
 except ImportError:
     SIGLIP_AVAILABLE = False
 
+try:
+    from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+    TROCR_AVAILABLE = True
+except ImportError:
+    TROCR_AVAILABLE = False
+    print("❌ TrOCR not available - install with: pip install transformers")
+
+try:
+    import easyocr
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
+
 class SigLIPClassifier:
-    """Enhanced SigLIP-based classification with clustering and training"""
+    """SigLIP-based classification with OCR number detection for horses only"""
     
     def __init__(self, config):
         self.config = config
         self.device = config.device
-        self.n_races = getattr(config, 'n_races', 9)  # 9 horses, 9 jockeys
         
         # Initialize SigLIP
         self.siglip_model = None
         self.siglip_processor = None
         self.setup_siglip()
         
-        # Classifiers
+        # Initialize TrOCR
+        self.trocr_processor = None
+        self.trocr_model = None
+        self.setup_trocr()
+        
+        # Horse classifier only
         self.horse_classifier = None
-        self.jockey_classifier = None
         
-        # Templates and embeddings
+        # Horse embeddings and labels (dynamic based on OCR detection)
         self.horse_embeddings = []
-        self.jockey_embeddings = []
         self.horse_labels = []
-        self.jockey_labels = []
         
-        # Dynamic thresholds
-        self.horse_threshold = getattr(config, 'siglip_confidence_threshold', 0.7)
-        self.jockey_threshold = getattr(config, 'siglip_confidence_threshold', 0.7)
+        # Dynamic class mapping for detected horses
+        self.class_mapping = {}      # horse_number -> classifier_index
+        self.reverse_mapping = {}    # classifier_index -> horse_number  
+        self.valid_classes = set()   # set of horse numbers with sufficient data
+        self.accuracy = None         # classification accuracy
+        
+        # Classification threshold
+        self.horse_threshold = getattr(config, 'siglip_confidence_threshold', 0.8)
         
         # Multi-scale settings
         self.scales = getattr(config, 'crop_scales', [1.0, 1.2, 0.8])
         
-        # Build training data and train classifiers
+        # Build training data and train classifier
         self.build_training_pipeline()
         
-        print(f"✅ Enhanced SigLIP Classifier initialized")
-        print(f"   🐴 Horse templates: {len([t for t in self.horse_embeddings if t is not None])}")
-        print(f"   🏇 Jockey templates: {len([t for t in self.jockey_embeddings if t is not None])}")
+        print(f"✅ SigLIP Classifier with TrOCR initialized")
+        print(f"   🐴 Horse samples: {len(self.horse_embeddings)}")
+        print(f"   🔢 TrOCR numbers detected: {len([l for l in self.horse_labels if l >= 0])}")
     
     def setup_siglip(self):
         """Initialize SigLIP model"""
@@ -78,53 +96,104 @@ class SigLIPClassifier:
         except Exception as e:
             print(f"❌ SigLIP setup failed: {e}")
     
+    def setup_trocr(self):
+        """Initialize TrOCR model"""
+        if not TROCR_AVAILABLE:
+            print("❌ TrOCR not available - install transformers")
+            return
+        
+        try:
+            model_name = "microsoft/dit-base-finetuned-rvlcdip"
+            self.trocr_processor =  AutoProcessor.from_pretrained("microsoft/dit-base-finetuned-rvlcdip")
+            self.trocr_model = AutoModelForImageClassification.from_pretrained("microsoft/dit-base-finetuned-rvlcdip")
+            self.trocr_model.to(self.device)
+            self.trocr_model.eval()
+            print("✅ TrOCR loaded")
+        except Exception as e:
+            print(f"❌ TrOCR setup failed: {e}")
+    
+    def detect_horse_number(self, crop):
+        """TrOCR-based horse number detection - CLEAN IMPLEMENTATION"""
+        if not self.trocr_model or not self.trocr_processor:
+            return -1
+        
+        try:
+            # Convert BGR to RGB
+            crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            
+            from PIL import Image
+            pil_image = Image.fromarray(crop_rgb.astype(np.uint8))
+            
+            # TrOCR processing
+            pixel_values = self.trocr_processor(pil_image, return_tensors="pt").pixel_values.to(self.device)
+            
+            with torch.no_grad():
+                generated_ids = self.trocr_model.generate(pixel_values)
+            
+            generated_text = self.trocr_processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+            
+            # Extract first digit
+            clean_text = ''.join(filter(str.isdigit, generated_text.strip()))
+            
+            if len(clean_text) >= 1:
+                number = int(clean_text[0])
+                if 0 <= number <= 9:
+                    return number
+            
+            return -1
+            
+        except Exception as e:
+            return -1
+    
+    
     def build_training_pipeline(self):
-        """Complete training pipeline: detection → clustering → classifier training"""
-        folder_path = Path(self.config.reference_folder_path)
-        if not folder_path.exists():
-            print(f"❌ Reference folder not found: {folder_path}")
+        """Complete training pipeline: video sampling → detection → OCR labeling → classifier training"""
+        video_path = Path(self.config.video_path)
+        if not video_path.exists():
+            print(f"❌ Video file not found: {video_path}")
             return
         
-        print(f"📁 Processing images from: {folder_path}")
+        print(f"🎬 Processing video: {video_path}")
         
-        # Step 1: Process all images and extract embeddings
-        all_horse_crops, all_jockey_crops = self.process_reference_images(folder_path)
+        # Step 1: Sample video and extract horse crops
+        all_horse_crops = self.process_video_frames(video_path)
         
-        if not all_horse_crops or not all_jockey_crops:
-            print("❌ Insufficient data for training")
+        if not all_horse_crops:
+            print("❌ No horse crops found")
             return
         
-        # Step 2: Extract embeddings for all crops
+        # Step 2: Extract embeddings and OCR labels
         print(f"   🔄 Extracting embeddings for {len(all_horse_crops)} horse crops...")
         horse_embeddings = self.extract_batch_embeddings(all_horse_crops)
-        print(f"   🔄 Extracting embeddings for {len(all_jockey_crops)} jockey crops...")
-        jockey_embeddings = self.extract_batch_embeddings(all_jockey_crops)
         
-        print(f"   📊 Horse embeddings shape: {horse_embeddings.shape}")
-        print(f"   📊 Jockey embeddings shape: {jockey_embeddings.shape}")
+        print(f"   🔢 Running OCR on {len(all_horse_crops)} horse crops...")
+        horse_labels = self.extract_ocr_labels(all_horse_crops)
         
-        # Step 3: Cluster into race groups (clusters 0-8, background=9)
-        horse_labels = self.cluster_entities_with_background(horse_embeddings, all_horse_crops, "horses")
-        jockey_labels = self.cluster_entities_with_background(jockey_embeddings, all_jockey_crops, "jockeys")
+        # Step 3: Filter valid samples (where OCR detected a number)
+        valid_indices = [i for i, label in enumerate(horse_labels) if label >= 0]
         
-        print(f"   🏷️  Horse labels: {len(horse_labels)} assigned")
-        print(f"   🏷️  Jockey labels: {len(jockey_labels)} assigned")
+        if len(valid_indices) < 10:
+            print(f"❌ Insufficient OCR detections: {len(valid_indices)} valid samples")
+            return
         
-        # Step 4: Save crops regardless of clustering success
-        if len(horse_labels) > 0:
-            self.save_clustered_crops(all_horse_crops, horse_labels, "horses")
-            self.create_cluster_visualizations(all_horse_crops, horse_labels, "horses")
+        valid_embeddings = horse_embeddings[valid_indices]
+        valid_labels = [horse_labels[i] for i in valid_indices]
         
-        if len(jockey_labels) > 0:
-            self.save_clustered_crops(all_jockey_crops, jockey_labels, "jockeys")
-            self.create_cluster_visualizations(all_jockey_crops, jockey_labels, "jockeys")
+        print(f"   ✅ Valid samples: {len(valid_indices)}/{len(all_horse_crops)}")
+        print(f"   📊 Label distribution: {dict(zip(*np.unique(valid_labels, return_counts=True)))}")
         
-        # Step 5: Store cluster embeddings as templates
-        self.store_cluster_templates(horse_embeddings, horse_labels, "horses")
-        self.store_cluster_templates(jockey_embeddings, jockey_labels, "jockeys")
+        # Step 4: Save crops by OCR labels
+        self.save_labeled_crops(all_horse_crops, horse_labels)
+        
+        # Step 5: Train/test validation
+        self.train_and_validate_classifier(valid_embeddings, valid_labels)
+        
+        # Step 6: Store for inference
+        self.horse_embeddings = valid_embeddings
+        self.horse_labels = valid_labels
     
-    def process_reference_images(self, folder_path):
-        """Process all images in folder and extract crops"""
+    def process_video_frames(self, video_path):
+        """Sample video at 10 FPS and extract horse crops"""
         from detectors import DetectionManager
         from models import SuperAnimalQuadruped
         
@@ -133,35 +202,52 @@ class SigLIPClassifier:
         detection_manager = DetectionManager(self.config, superanimal)
         
         all_horse_crops = []
-        all_jockey_crops = []
         
-        image_files = list(folder_path.glob("*.jpg")) + list(folder_path.glob("*.png"))
-        print(f"   📷 Processing {len(image_files)} images")
+        # Open video
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            print(f"❌ Cannot open video: {video_path}")
+            return []
         
-        for img_path in image_files:
-            image = cv2.imread(str(img_path))
-            if image is None:
-                continue
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        # Sample every 15 seconds (1 frame per 15 seconds)
+        frame_interval = int(fps * 15)  # frames per 15 seconds
+        sampled_frames = 0
+        
+        print(f"   📹 Video: {fps:.1f} FPS, {total_frames} frames")
+        print(f"   🎯 Sampling every {frame_interval} frames (1 frame per 15 seconds)")
+        
+        frame_count = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
             
-            # Detect entities
-            human_detections = detection_manager.detect_humans(image)
-            horse_detections = detection_manager.detect_horses(image)
+            # Sample at 10 FPS interval
+            if frame_count % frame_interval == 0:
+                # Detect horses only
+                horse_detections = detection_manager.detect_horses(frame)
+                
+                # Extract crops with multi-scale
+                if sv and len(horse_detections) > 0:
+                    for bbox in horse_detections.xyxy:
+                        crops = self.extract_multiscale_crops(frame, bbox)
+                        all_horse_crops.extend(crops)
+                
+                sampled_frames += 1
+                
+                # Limit to avoid too many samples
+                if sampled_frames >= 200:  # Max 200 sampled frames
+                    break
             
-            # Extract crops with multi-scale
-            if sv and len(horse_detections) > 0:
-                for bbox in horse_detections.xyxy:
-                    crops = self.extract_multiscale_crops(image, bbox)
-                    all_horse_crops.extend(crops)
-            
-            if sv and len(human_detections) > 0:
-                for bbox in human_detections.xyxy:
-                    crops = self.extract_multiscale_crops(image, bbox)
-                    all_jockey_crops.extend(crops)
+            frame_count += 1
         
-        print(f"   🐴 Extracted {len(all_horse_crops)} horse crops")
-        print(f"   🏇 Extracted {len(all_jockey_crops)} jockey crops")
+        cap.release()
         
-        return all_horse_crops, all_jockey_crops
+        print(f"   🎬 Processed {sampled_frames} frames, extracted {len(all_horse_crops)} horse crops")
+        return all_horse_crops
     
     def extract_multiscale_crops(self, image, bbox, padding=0.1):
         """Extract crops at multiple scales"""
@@ -253,139 +339,148 @@ class SigLIPClassifier:
         except Exception as e:
             return None
     
-    def cluster_entities(self, embeddings, n_clusters, entity_type):
-        """Cluster embeddings into race groups"""
-        if len(embeddings) < n_clusters:
-            print(f"❌ Insufficient {entity_type} for clustering: {len(embeddings)} < {n_clusters}")
-            return np.arange(len(embeddings)) % n_clusters
-    
-    def save_clustered_crops(self, crops, labels, entity_type):
-        """Save crops organized by cluster"""
-        output_dir = Path("clustered_ref_images") / entity_type
-        output_dir.mkdir(parents=True, exist_ok=True)
+    def extract_ocr_labels(self, crops):
+        """Extract TrOCR labels and save crops"""
+        labels = []
         
-        # Create cluster subdirectories
-        for cluster_id in range(self.n_races):
-            cluster_dir = output_dir / f"cluster_{cluster_id}"
-            cluster_dir.mkdir(exist_ok=True)
+        # Create inspection directory
+        inspect_dir = Path("crop_inspection")
+        inspect_dir.mkdir(exist_ok=True)
         
-        # Save crops to respective clusters
-        for i, (crop, label) in enumerate(zip(crops, labels)):
-            cluster_dir = output_dir / f"cluster_{label}"
-            crop_path = cluster_dir / f"{entity_type}_{i:04d}.jpg"
+        detected_dir = inspect_dir / "detected"
+        failed_dir = inspect_dir / "failed"
+        detected_dir.mkdir(exist_ok=True)
+        failed_dir.mkdir(exist_ok=True)
+        
+        print(f"   💾 Saving crops to {inspect_dir} for inspection")
+        
+        for i, crop in enumerate(crops):
+            number = self.detect_horse_number(crop)
+            labels.append(number)
+            
+            # Save crop
+            if number >= 0:
+                crop_path = detected_dir / f"crop_{i:04d}_num_{number}.jpg"
+                print(f"   🔢 Crop {i}: Detected number {number}")
+            else:
+                crop_path = failed_dir / f"crop_{i:04d}_failed.jpg"
+            
             cv2.imwrite(str(crop_path), crop)
         
-        print(f"   💾 Saved {len(crops)} {entity_type} crops to clustered_ref_images/{entity_type}/")
+        detected_count = sum(1 for l in labels if l >= 0)
+        print(f"   📊 TrOCR Results: {detected_count}/{len(crops)} detected")
+        
+        return labels
     
-    def create_cluster_visualizations(self, crops, labels, entity_type):
-        """Create visualization PNG showing all 9 clusters"""
-        grid_size = 3
-        crop_size = 224
-        grid_img = np.zeros((grid_size * crop_size, grid_size * crop_size, 3), dtype=np.uint8)
+    def save_labeled_crops(self, crops, labels):
+        """Save crops organized by OCR labels"""
+        output_dir = Path("labeled_horse_crops")
+        output_dir.mkdir(exist_ok=True)
         
-        # Get representative image for each cluster
-        for cluster_id in range(self.n_races):
-            cluster_crops = [crop for crop, label in zip(crops, labels) if label == cluster_id]
-            
-            if not cluster_crops:
-                continue
-            
-            repr_crop = cluster_crops[0]
-            
-            row = cluster_id // grid_size
-            col = cluster_id % grid_size
-            
-            y_start = row * crop_size
-            y_end = y_start + crop_size
-            x_start = col * crop_size
-            x_end = x_start + crop_size
-            
-            grid_img[y_start:y_end, x_start:x_end] = repr_crop
-            
-            cv2.putText(grid_img, f"Cluster {cluster_id}", 
-                       (x_start + 10, y_start + 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        # Create number subdirectories (0-9 + unknown)
+        for number in range(10):
+            number_dir = output_dir / f"horse_{number}"
+            number_dir.mkdir(exist_ok=True)
         
-        output_path = f"clustered_ref_images/{entity_type}_clusters.png"
-        cv2.imwrite(output_path, grid_img)
-        print(f"   🖼️  Created {entity_type} cluster visualization: {output_path}")
-    
-    def cluster_entities_with_background(self, embeddings, crops, entity_type):
-        """Cluster with background class (0-8=races, 9=background)"""
-        n_crops = len(crops)
+        unknown_dir = output_dir / "unknown"
+        unknown_dir.mkdir(exist_ok=True)
         
-        # If no embeddings, assign sequential labels
-        if len(embeddings) == 0 or embeddings.size == 0:
-            print(f"❌ No embeddings for {entity_type} - using sequential assignment")
-            return np.arange(n_crops) % self.n_races
-        
-        # If embeddings don't match crops, assign sequential
-        if len(embeddings) != n_crops:
-            print(f"❌ Embedding/crop mismatch for {entity_type}: {len(embeddings)} vs {n_crops}")
-            return np.arange(n_crops) % self.n_races
-        
-        try:
-            # Cluster into n_races groups
-            kmeans = KMeans(n_clusters=self.n_races, random_state=42, n_init=10)
-            labels = kmeans.fit_predict(embeddings)
-            
-            # Calculate silhouette scores to identify poor fits
-            from sklearn.metrics import silhouette_samples
-            silhouette_scores = silhouette_samples(embeddings, labels)
-            
-            # Assign poor fits to background class (9)
-            background_threshold = 0.1  # Low silhouette = poor fit
-            poor_fit_mask = silhouette_scores < background_threshold
-            labels[poor_fit_mask] = 9  # Background class
-            
-            # Stats
-            n_background = np.sum(poor_fit_mask)
-            unique, counts = np.unique(labels, return_counts=True)
-            print(f"   ✅ {entity_type}: {n_crops-n_background} clustered, {n_background} background")
-            print(f"   📊 Distribution: {dict(zip(unique, counts))}")
-            
-            return labels
-            
-        except Exception as e:
-            print(f"❌ Clustering failed for {entity_type}: {e}")
-            print(f"   🔄 Using sequential assignment")
-            return np.arange(n_crops) % self.n_races
-            
-        except Exception as e:
-            print(f"❌ Clustering failed for {entity_type}: {e}")
-            return np.arange(len(embeddings)) % n_clusters
-    
-    def store_cluster_templates(self, embeddings, labels, entity_type):
-        """Store cluster embeddings as templates for SigLIP similarity"""
-        cluster_embeddings = []
-        
-        for cluster_id in range(self.n_races):
-            cluster_mask = labels == cluster_id
-            if np.any(cluster_mask):
-                # Use mean embedding for cluster
-                cluster_embedding = np.mean(embeddings[cluster_mask], axis=0)
-                cluster_embeddings.append(cluster_embedding)
+        # Save crops to respective directories
+        for i, (crop, label) in enumerate(zip(crops, labels)):
+            if label >= 0:
+                target_dir = output_dir / f"horse_{label}"
             else:
-                cluster_embeddings.append(None)
+                target_dir = unknown_dir
+            
+            crop_path = target_dir / f"crop_{i:04d}.jpg"
+            cv2.imwrite(str(crop_path), crop)
         
-        if entity_type == "horses":
-            self.horse_embeddings = cluster_embeddings
+        valid_count = sum(1 for l in labels if l >= 0)
+        print(f"   💾 Saved {len(crops)} crops: {valid_count} labeled, {len(crops)-valid_count} unknown")
+    
+    def train_and_validate_classifier(self, embeddings, labels):
+        """Train classifier with dynamic class handling"""
+        if len(embeddings) < 4:
+            print("❌ Insufficient data for training (need at least 4 samples)")
+            return
+        
+        # Filter classes with insufficient samples (need at least 2 for train/test split)
+        from collections import Counter
+        label_counts = Counter(labels)
+        valid_classes = [cls for cls, count in label_counts.items() if count >= 2]
+        
+        if len(valid_classes) < 2:
+            print("❌ Need at least 2 classes with 2+ samples each")
+            return
+        
+        # Filter data to only include valid classes
+        valid_indices = [i for i, label in enumerate(labels) if label in valid_classes]
+        filtered_embeddings = embeddings[valid_indices]
+        filtered_labels = [labels[i] for i in valid_indices]
+        
+        print(f"   🎯 Training on {len(valid_classes)} classes: {sorted(valid_classes)}")
+        print(f"   📊 Filtered data: {len(filtered_embeddings)} samples")
+        
+        # Create class mapping for dynamic classes
+        self.class_mapping = {cls: i for i, cls in enumerate(sorted(valid_classes))}
+        self.reverse_mapping = {i: cls for cls, i in self.class_mapping.items()}
+        
+        # Map labels to sequential indices for classifier
+        mapped_labels = [self.class_mapping[label] for label in filtered_labels]
+        
+        # Train/test split with stratification
+        try:
+            X_train, X_test, y_train, y_test = train_test_split(
+                filtered_embeddings, mapped_labels, test_size=0.3, random_state=42, stratify=mapped_labels
+            )
+        except ValueError:
+            # Fallback without stratification if still issues
+            X_train, X_test, y_train, y_test = train_test_split(
+                filtered_embeddings, mapped_labels, test_size=0.3, random_state=42
+            )
+            print("   ⚠️ Using non-stratified split due to class imbalance")
+        
+        # Train classifier
+        self.horse_classifier = RandomForestClassifier(n_estimators=100, random_state=42)
+        self.horse_classifier.fit(X_train, y_train)
+        
+        # Validate
+        y_pred = self.horse_classifier.predict(X_test)
+        accuracy = accuracy_score(y_test, y_pred)
+        
+        print(f"   🎯 Classifier accuracy: {accuracy:.3f}")
+        
+        if accuracy >= 0.9:
+            print("   ✅ Target accuracy (90%) achieved!")
         else:
-            self.jockey_embeddings = cluster_embeddings
+            print(f"   ⚠️ Below target accuracy (90%). Current: {accuracy:.1%}")
         
-        valid_clusters = sum(1 for emb in cluster_embeddings if emb is not None)
-        print(f"   🎯 Stored {valid_clusters} {entity_type} cluster templates")
+        # Save classifier and mappings
+        classifier_data = {
+            'classifier': self.horse_classifier,
+            'class_mapping': self.class_mapping,
+            'reverse_mapping': self.reverse_mapping,
+            'accuracy': accuracy
+        }
+        joblib.dump(classifier_data, "horse_number_classifier.pkl")
+        print("   💾 Classifier and mappings saved")
+        
+        # Store valid classes for inference
+        self.valid_classes = set(valid_classes)
+        print(f"   🐴 Trackable horses: {sorted(valid_classes)}")
     
     def classify_detections(self, frame, detections, detection_type='horse'):
-        """Classify detections using SigLIP cosine similarity"""
-        if not sv or len(detections) == 0:
-            return np.arange(len(detections))
+        """Classify horse detections using SigLIP + OCR with dynamic classes"""
+        if not sv or len(detections) == 0 or detection_type != 'horse':
+            return np.full(len(detections), -1) if len(detections) > 0 else np.array([])
         
-        templates = self.horse_embeddings if detection_type == 'horse' else self.jockey_embeddings
-        threshold = self.horse_threshold if detection_type == 'horse' else self.jockey_threshold
+        if not self.horse_classifier or len(self.horse_embeddings) == 0:
+            return np.full(len(detections), -1)
         
-        if not templates:
-            return np.arange(len(detections))
+        # Check if we have valid classes from training
+        if not hasattr(self, 'reverse_mapping') or not hasattr(self, 'valid_classes'):
+            print("❌ No valid classes available for classification")
+            return np.full(len(detections), -1)
         
         class_ids = []
         
@@ -410,39 +505,30 @@ class SigLIPClassifier:
             # Average embeddings across scales
             avg_embedding = np.mean(embeddings, axis=0)
             
-            # Find best match using cosine similarity
-            best_class = -1
-            best_similarity = 0
-            
-            for i, template_embedding in enumerate(templates):
-                if template_embedding is not None:
-                    similarity = self.calculate_similarity(avg_embedding, template_embedding)
-                    if similarity > best_similarity and similarity > threshold:
-                        best_similarity = similarity
-                        best_class = i
-            
-            class_ids.append(best_class)
+            # Classify using trained classifier
+            try:
+                # Get prediction (this will be mapped class index)
+                mapped_prediction = self.horse_classifier.predict([avg_embedding])[0]
+                confidence = self.horse_classifier.predict_proba([avg_embedding]).max()
+                
+                # Map back to original horse number
+                if mapped_prediction in self.reverse_mapping and confidence > self.horse_threshold:
+                    original_horse_number = self.reverse_mapping[mapped_prediction]
+                    class_ids.append(original_horse_number)
+                else:
+                    class_ids.append(-1)
+                    
+            except Exception as e:
+                class_ids.append(-1)
         
         return np.array(class_ids)
     
-    def calculate_similarity(self, embedding1, embedding2):
-        """Calculate cosine similarity"""
-        try:
-            norm1 = np.linalg.norm(embedding1)
-            norm2 = np.linalg.norm(embedding2)
-            
-            if norm1 < 1e-8 or norm2 < 1e-8:
-                return 0.0
-            
-            similarity = np.dot(embedding1, embedding2) / (norm1 * norm2)
-            return float(np.clip(similarity, -1.0, 1.0))
-            
-        except Exception:
-            return 0.0
-    
     def update_tracker_ids(self, detections, class_ids, detection_type='horse'):
-        """Update tracker IDs based on classification"""
+        """Update tracker IDs based on classification for horses only"""
         if not sv or not hasattr(detections, 'tracker_id') or detections.tracker_id is None:
+            return detections
+        
+        if detection_type != 'horse':
             return detections
         
         updated_detections = sv.Detections(
@@ -452,24 +538,27 @@ class SigLIPClassifier:
             tracker_id=detections.tracker_id.copy()
         )
         
-        # Update tracker IDs
+        # Update tracker IDs for horses (use OCR number directly as ID)
         for i, class_id in enumerate(class_ids):
             if class_id >= 0:
-                if detection_type == 'horse':
-                    updated_detections.tracker_id[i] = 100 + class_id
-                else:
-                    updated_detections.tracker_id[i] = 200 + class_id
+                updated_detections.tracker_id[i] = class_id  # Use OCR number as tracking ID
         
         return updated_detections
     
     def get_classification_stats(self):
-        """Get classification statistics"""
+        """Get classification statistics for dynamic classes"""
+        valid_labels = [l for l in self.horse_labels if l >= 0]
+        trackable_horses = getattr(self, 'valid_classes', set())
+        accuracy = getattr(self, 'accuracy', None)
+        
         return {
-            'n_races': self.n_races,
-            'horse_accuracy': getattr(self, 'horse_accuracy', None),
-            'jockey_accuracy': getattr(self, 'jockey_accuracy', None),
+            'horse_samples': len(self.horse_embeddings),
+            'valid_ocr_detections': len(valid_labels),
+            'trackable_horses': sorted(list(trackable_horses)),
+            'num_trackable': len(trackable_horses),
+            'accuracy': accuracy,
             'horse_threshold': self.horse_threshold,
-            'jockey_threshold': self.jockey_threshold,
             'scales': self.scales,
+            'trocr_available': self.trocr_model is not None,
             'siglip_available': self.siglip_model is not None
         }

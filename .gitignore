@@ -8,3 +8,6 @@ __pycache__
 *.pt
 *.pyc
 *.lock
+clustered_ref_images
+labeled_horse_crops
+*.pkl

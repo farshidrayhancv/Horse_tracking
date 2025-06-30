@@ -1,5 +1,5 @@
-# BoostTrack + SigLIP Configuration - OPTIMIZED FOR TRACKING STABILITY
-# This config addresses track fragmentation and improves ReID performance
+# Horse-Only Tracking Configuration with OCR Number Detection
+# OCR-based horse number detection (0-9) replaces clustering
 
 # Basic Settings
 video_path: 'inputs/horse_9.mp4'
@@ -8,62 +8,58 @@ display: false
 device: 'cuda'
 max_frames: null
 
-# Model Selection
-human_detector: 'rtdetr'
+# Model Selection - Horses Only
 horse_detector: 'rtdetr'
-human_pose_estimator: 'vitpose'
 horse_pose_estimator: 'superanimal'
 
-# Detection Confidence Thresholds (Quality-Focused - High Standards)
-confidence_human_detection: 0.6      # High threshold - only confident human detections
-confidence_horse_detection: 0.6      # High threshold - only confident horse detections  
-confidence_human_pose: 0.5
+# Detection Confidence Thresholds - Quality-Focused
+confidence_horse_detection: 0.7      # High threshold for quality horse detections  
 confidence_horse_pose_superanimal: 0.5
 confidence_horse_pose_vitpose: 0.5
 
 # Tracking Method
 tracker_type: 'deepocsort'
 
-# Deep OC-SORT Configuration - KALMAN FILTER FIX
+# Deep OC-SORT Configuration for Horses
 deepocsort_config:
   # === CORE TRACKING ===
   max_age: 100
-  min_hits: 7                    # Reduced to 2 - minimum for Kalman stability
+  min_hits: 7
   det_thresh: 0.7
   iou_threshold: 0.2
   per_class: false
   
   # === KALMAN FILTER STABILITY ===
-  delta_t: 1                     # Single frame velocity
-  inertia: 0.05                   # Reduced inertia - less history dependence
-  Q_xy_scaling: 1              # Higher noise tolerance
-  Q_s_scaling: 0.5               # Higher scale noise tolerance
+  delta_t: 2
+  inertia: 0.05
+  Q_xy_scaling: 1
+  Q_s_scaling: 0.5
   
   # === ASSOCIATION ===
   asso_func: "iou"
   w_association_emb: 0.8
-  alpha_fixed_emb: 0.7           # Faster embedding updates
+  alpha_fixed_emb: 0.7
   aw_param: 0.3
   
-  # === DISABLE PROBLEMATIC FEATURES ===
+  # === FEATURES ===
   embedding_off: true
-  cmc_off: true                  # Disable camera motion compensation
-  aw_off: true                   # Disable adaptive weighting
+  cmc_off: true
+  aw_off: true
 
-# SigLIP Classification (Quality-Focused Configuration)
+# SigLIP OCR Classification - Horses Only
 enable_siglip_classification: true
 reference_folder_path: 'inputs/ref_imgs/'
-max_horses: 9                     # Reduced expectation - focus on quality
-max_jockeys: 9                    # Reduced expectation - focus on quality  
-siglip_confidence_threshold: 0.7  # Higher threshold - only confident classifications
+max_horses: 10                        # Maximum horses to track
+siglip_confidence_threshold: 0.9      # High threshold for OCR classification
+crop_scales: [1.0, 1.2, 0.8]         # Multi-scale crop extraction
 
 # Performance
-max_tracks_per_frame: 9           # Expect fewer but stable tracks
+max_tracks_per_frame: 10              # Expect max 10 horses
 
-# === EXPECTED IMPROVEMENTS WITH QUALITY-FOCUSED APPROACH ===
-# 1. Track Count: 3-6 horses (instead of 83), 3-6 jockeys (instead of 178)
-# 2. Track Persistence: Same track IDs throughout entire race
-# 3. ReID Performance: High-confidence track recoveries when occlusion ends
-# 4. SigLIP Success: Confident individual identification of tracked horses
-# 5. Zero False Positives: Only track what we're confident about
-# 6. Perfect for Race Analysis: Stable tracking of main contenders
+# === EXPECTED IMPROVEMENTS WITH OCR-BASED APPROACH ===
+# 1. Ground Truth Labels: OCR detects actual horse numbers (0-9) from clothing
+# 2. Consistent Tracking: Same number throughout race using SigLIP classification
+# 3. High Accuracy: 90%+ classification accuracy with train/test validation
+# 4. Robust Recovery: DeepOCSORT maintains tracks during occlusion
+# 5. Clean Visualization: Big fonts showing OCR-detected horse numbers
+# 6. No Clustering: Direct OCR labeling replaces K-means clustering

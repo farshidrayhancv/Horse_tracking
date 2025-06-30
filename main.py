@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Enhanced Horse Tracking System with BoostTrack + SigLIP Classification
-Simplified ReID using reference image approach
+Enhanced Horse Tracking System with DeepOCSORT + SigLIP OCR Classification
+OCR-based horse number detection (0-9) for tracking
 """
 
 import cv2
@@ -68,7 +68,7 @@ except ImportError:
     print("⚠️ BoxMOT trackers not available - install with: pip install boxmot")
 
 
-class HybridPoseSystem:
+class HorseTrackingSystem:
     def __init__(self, video_path: str, config: Config):
         self.video_path = Path(video_path)
         self.config = config
@@ -78,7 +78,7 @@ class HybridPoseSystem:
         self.debug_logger.set_video_name(str(self.video_path))
         
         # Parse expected counts from filename
-        self.expected_horses, self.expected_jockeys = self.parse_filename_counts()
+        self.expected_horses = self.parse_filename_counts()
         
         # Setup video
         self.cap = cv2.VideoCapture(str(self.video_path))
@@ -102,13 +102,13 @@ class HybridPoseSystem:
         
         # Print configuration
         self.config.print_config()
-        print(f"🎯 Quality Focus: {self.expected_horses} horses, {self.expected_jockeys} jockeys (high-confidence tracking)")
-        print(f"🐴🏇 Enhanced Horse Tracking System ready: {self.total_frames} frames @ {self.fps} FPS")
+        print(f"🎯 Horse-Only Focus: {self.expected_horses} horses with OCR number detection")
+        print(f"🐴 Enhanced Horse Tracking System ready: {self.total_frames} frames @ {self.fps} FPS")
         print(f"📊 Debug logging enabled - logs will be saved at end of inference")
-        print(f"🏆 Strategy: Perfect tracking of main contenders rather than fragmenting all horses")
+        print(f"🔢 Strategy: OCR-based horse number detection (0-9) for consistent tracking")
     
     def parse_filename_counts(self):
-        """Parse filename to extract expected horse/jockey counts - Quality-focused approach"""
+        """Parse filename to extract expected horse count"""
         filename = self.video_path.stem
         
         # Look for pattern like horse_11, horse_22, etc.
@@ -116,17 +116,17 @@ class HybridPoseSystem:
         if match:
             count = int(match.group(1))
             # For quality-focused approach, limit expectations to main contenders
-            quality_count = min(count, 6)  # Max 6 for quality tracking
+            quality_count = min(count, 10)  # Max 10 horses for quality tracking
             if quality_count < count:
-                print(f"🎯 Quality-focused: Targeting {quality_count} main contenders from {count} total horses")
-            return quality_count, quality_count
+                print(f"🎯 Quality-focused: Targeting {quality_count} main horses from {count} total")
+            return quality_count
         
         # Default fallback - quality-focused
         print(f"⚠️ Could not parse count from filename '{filename}', using quality-focused defaults")
-        return 4, 4  # Default to 4 horses, 4 jockeys for quality tracking
+        return 9  # Default to 9 horses for quality tracking
     
     def setup_trackers(self):
-        """Initialize Deep OC-SORT tracker"""
+        """Initialize Deep OC-SORT tracker for horses only"""
         if not sv:
             raise RuntimeError("❌ Supervision not available - install with: pip install supervision")
         
@@ -140,41 +140,34 @@ class HybridPoseSystem:
             raise RuntimeError(f"❌ {tracker_type} not available - install with: pip install boxmot")
     
     def setup_deepocsort(self):
-        """Initialize Deep OC-SORT with all configurable parameters"""
+        """Initialize Deep OC-SORT for horses"""
         try:
             deepocsort_config = getattr(self.config, 'deepocsort_config', {})
             
             # Quality-focused defaults for Deep OC-SORT
             quality_defaults = {
-                # Core tracking parameters
-                'max_age': 200,              # Keep tracks alive much longer for racing
-                'min_hits': 5,               # Require stable detections before tracking
-                'det_thresh': 0.65,          # High confidence threshold
-                'iou_threshold': 0.3,        # OC-SORT optimal IoU threshold
-                'per_class': False,          # Single class tracking mode
-                
-                # Motion and Kalman filter parameters  
-                'delta_t': 3,                # Velocity estimation window (frames)
-                'inertia': 0.3,              # Higher inertia for smooth racing motion
-                'Q_xy_scaling': 0.01,        # Position noise scaling
-                'Q_s_scaling': 0.0001,       # Scale noise scaling
-                
-                # Association and ReID parameters
-                'asso_func': 'iou',          # Association function (iou/giou)
-                'w_association_emb': 0.6,    # Higher ReID weight for horse identification
-                'alpha_fixed_emb': 0.9,      # Embedding update rate
-                'aw_param': 0.5,             # Adaptive weighting parameter
-                
-                # Feature control flags
-                'embedding_off': False,      # Keep ReID enabled
-                'cmc_off': False,            # Keep camera motion compensation
-                'aw_off': False,             # Keep adaptive weighting
+                'max_age': 200,
+                'min_hits': 5,
+                'det_thresh': 0.65,
+                'iou_threshold': 0.3,
+                'per_class': False,
+                'delta_t': 3,
+                'inertia': 0.3,
+                'Q_xy_scaling': 0.01,
+                'Q_s_scaling': 0.0001,
+                'asso_func': 'iou',
+                'w_association_emb': 0.6,
+                'alpha_fixed_emb': 0.9,
+                'aw_param': 0.5,
+                'embedding_off': False,
+                'cmc_off': False,
+                'aw_off': False,
             }
             
-            # Merge config with defaults (config overrides)
+            # Merge config with defaults
             final_config = {**quality_defaults, **deepocsort_config}
             
-            # Type validation and conversion
+            # Type validation
             typed_config = {}
             for key, value in final_config.items():
                 try:
@@ -196,21 +189,12 @@ class HybridPoseSystem:
             device_id = 0 if self.config.device == 'cuda' else 'cpu'
             reid_weights_path = Path('osnet_x0_25_msmt17.pt')
             
-            print(f"🔧 Deep OC-SORT Quality Configuration:")
+            print(f"🔧 Deep OC-SORT Horse Configuration:")
             key_params = ['max_age', 'min_hits', 'det_thresh', 'iou_threshold', 
                          'inertia', 'w_association_emb', 'alpha_fixed_emb']
             for param in key_params:
                 if param in typed_config:
                     print(f"   {param}: {typed_config[param]}")
-            
-            # Show feature flags
-            feature_flags = ['embedding_off', 'cmc_off', 'aw_off']
-            enabled_features = [f for f in feature_flags if not typed_config.get(f, True)]
-            disabled_features = [f for f in feature_flags if typed_config.get(f, False)]
-            if enabled_features:
-                print(f"   ✅ Features enabled: {', '.join(enabled_features)}")
-            if disabled_features:
-                print(f"   ❌ Features disabled: {', '.join(disabled_features)}")
             
             self.horse_tracker = DeepOcSort(
                 reid_weights=reid_weights_path,
@@ -219,23 +203,15 @@ class HybridPoseSystem:
                 **typed_config
             )
             
-            self.human_tracker = DeepOcSort(
-                reid_weights=reid_weights_path,
-                device=device_id,
-                half=True,
-                **typed_config
-            )
-            
             self.tracker_type = 'deepocsort'
-            print(f"✅ Deep OC-SORT + ReID initialized with {len(typed_config)} parameters")
+            print(f"✅ Deep OC-SORT + ReID initialized for horses")
             
         except Exception as e:
             print(f"❌ Deep OC-SORT initialization failed: {e}")
-            print(f"📋 Config received: {deepocsort_config}")
             raise RuntimeError(f"Failed to initialize Deep OC-SORT: {e}")
     
     def setup_boosttrack(self):
-        """Initialize BoostTrack with ReID"""
+        """Initialize BoostTrack for horses"""
         try:
             boosttrack_config = getattr(self.config, 'boosttrack_config', {})
             
@@ -253,12 +229,8 @@ class HybridPoseSystem:
                 else:
                     typed_config[key] = value
             
-            # Enable ReID functionality
             typed_config['with_reid'] = True
-            
             device_id = 0 if self.config.device == 'cuda' else 'cpu'
-            
-            # Fix: Convert reid_weights string to Path object
             reid_weights_path = Path('osnet_x0_25_msmt17.pt')
             
             self.horse_tracker = BoostTrack(
@@ -269,16 +241,8 @@ class HybridPoseSystem:
                 **typed_config
             )
             
-            self.human_tracker = BoostTrack(
-                reid_weights=reid_weights_path,
-                device=device_id,
-                half=True,
-                with_reid=True,
-                **typed_config
-            )
-            
             self.tracker_type = 'boosttrack'
-            print(f"✅ BoostTrack + ReID initialized with {len(typed_config)} parameters")
+            print(f"✅ BoostTrack + ReID initialized for horses")
             
         except Exception as e:
             print(f"❌ BoostTrack initialization failed: {e}")
@@ -299,26 +263,25 @@ class HybridPoseSystem:
         # Setup visualizer
         self.visualizer = Visualizer(self.config, self.superanimal)
         
-        # Setup SigLIP classifier (REPLACES complex ReID)
+        # Setup SigLIP classifier with OCR
         if getattr(self.config, 'enable_siglip_classification', False):
             self.siglip_classifier = SigLIPClassifier(self.config)
         else:
             self.siglip_classifier = None
-            print("🔍 SigLIP Classification: DISABLED")
+            print("🔍 SigLIP OCR Classification: DISABLED")
     
     def limit_detections(self, detections, max_count, detection_type="object"):
-        """Limit detections to top-quality ones, keeping highest confidence detections"""
+        """Limit detections to top-quality ones"""
         if not sv or len(detections) == 0:
             return detections
         
         if len(detections) <= max_count:
             return detections
         
-        # Sort by confidence (descending) and take top N highest quality detections
+        # Sort by confidence and take top N
         sorted_indices = np.argsort(detections.confidence)[::-1]
         top_indices = sorted_indices[:max_count]
         
-        # Log what we're filtering for quality analysis
         if len(detections) > max_count:
             kept_conf = detections.confidence[top_indices].min()
             dropped_conf = detections.confidence[sorted_indices[max_count:]].max()
@@ -346,7 +309,6 @@ class HybridPoseSystem:
             else:
                 class_ids = np.zeros(len(detections), dtype=np.float64)
             
-            # Ensure minimum detection array size
             if len(xyxy) == 0:
                 return sv.Detections.empty()
                 
@@ -366,17 +328,12 @@ class HybridPoseSystem:
             
         except (IndexError, RuntimeError) as e:
             print(f"🔧 Deep OC-SORT error bypassed: {str(e)[:50]}...")
-            # Continue processing without crashing
             return sv.Detections(
                 xyxy=detections.xyxy,
                 confidence=detections.confidence,
                 class_id=detections.class_id if hasattr(detections, 'class_id') else None,
-                tracker_id=np.arange(len(detections)) + 1000  # High IDs to avoid conflicts
+                tracker_id=np.arange(len(detections)) + 1000
             )
-    
-    def visualize_motion_predictions(self, frame, tracking_info):
-        """Visualize motion predictions (placeholder for future enhancement)"""
-        return frame
     
     def associate_poses_with_tracks(self, poses, tracked_detections):
         """Associate pose results with tracked detection IDs"""
@@ -397,9 +354,8 @@ class HybridPoseSystem:
         if self.config.output_path:
             output_path = self.config.output_path
         else:
-            # Create safe output filename
             input_stem = self.video_path.stem if self.video_path.suffix else self.video_path.name
-            output_path = str(self.video_path.parent / f"{input_stem}_boosttrack_output.mp4")
+            output_path = str(self.video_path.parent / f"{input_stem}_horse_ocr_output.mp4")
         
         print(f"🎬 Processing: {self.video_path}")
         print(f"📤 Output: {output_path}")
@@ -413,24 +369,26 @@ class HybridPoseSystem:
         paused = False
         
         stats = {
-            'humans_detected': 0, 'horses_detected': 0,
-            'human_poses': 0, 'horse_poses': 0,
-            'superanimal_wins': 0, 'vitpose_wins': 0,
-            'tracked_horses': 0, 'tracked_humans': 0,
-            'active_horse_tracks': set(), 'active_human_tracks': set(),
-            'siglip_classifications': 0, 'individual_identifications': 0
+            'horses_detected': 0,
+            'horse_poses': 0,
+            'superanimal_wins': 0, 
+            'vitpose_wins': 0,
+            'tracked_horses': 0,
+            'active_horse_tracks': set(),
+            'siglip_classifications': 0, 
+            'horse_identifications': 0
         }
         
-        # Initialize progress bar (only if not displaying)
+        # Initialize progress bar
         if TQDM_AVAILABLE and not self.config.display and self.total_frames != float('inf'):
-            pbar = tqdm(total=max_frames, desc="Processing with BoostTrack + SigLIP", 
+            pbar = tqdm(total=max_frames, desc="Processing with OCR Horse Tracking", 
                        bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}')
         else:
             pbar = None
         
         # Setup display window
         if self.config.display:
-            window_name = "Enhanced Horse Racing System - BoostTrack + SigLIP"
+            window_name = "Enhanced Horse Racing System - OCR Number Detection"
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
             display_width = min(1200, self.width)
             display_height = int(self.height * (display_width / self.width))
@@ -445,37 +403,29 @@ class HybridPoseSystem:
             frame_start_time = time.time()
             self.debug_logger.log_frame_start(frame_count, frame.shape)
             
-            # STEP 1: Detect objects
-            human_detections = self.detection_manager.detect_humans(frame)
+            # STEP 1: Detect horses only
             horse_detections = self.detection_manager.detect_horses(frame)
             
             # LOG: Detections
-            detection_method = f"H:{self.config.human_detector}/Ho:{self.config.horse_detector}"
-            self.debug_logger.log_detections(human_detections, horse_detections, detection_method)
+            detection_method = f"Horse:{self.config.horse_detector}"
+            self.debug_logger.log_detections(sv.Detections.empty(), horse_detections, detection_method)
             
-            # STEP 2: Limit detections to expected counts
-            human_detections = self.limit_detections(human_detections, self.expected_jockeys, "jockeys")
+            # STEP 2: Limit detections to expected count
             horse_detections = self.limit_detections(horse_detections, self.expected_horses, "horses")
             
-            # STEP 3: Track detections with configured tracker
+            # STEP 3: Track detections
             tracked_horses = self.update_tracker(self.horse_tracker, horse_detections, frame)
-            tracked_humans = self.update_tracker(self.human_tracker, human_detections, frame)
             
             # LOG: Tracking updates
-            self.debug_logger.log_tracking_update(tracked_humans, tracked_horses, 'BoostTrack')
+            self.debug_logger.log_tracking_update(sv.Detections.empty(), tracked_horses, self.tracker_type)
             
-            # Update tracking stats - Handle None tracker_id
+            # Update tracking stats
             if len(tracked_horses) > 0 and hasattr(tracked_horses, 'tracker_id') and tracked_horses.tracker_id is not None:
                 stats['active_horse_tracks'].update(tracked_horses.tracker_id)
-            if len(tracked_humans) > 0 and hasattr(tracked_humans, 'tracker_id') and tracked_humans.tracker_id is not None:
-                stats['active_human_tracks'].update(tracked_humans.tracker_id)
             
-            # Filter humans to jockeys only (using tracked detections)
-            jockey_detections = self.detection_manager.filter_jockeys(tracked_humans, tracked_horses)
-            
-            # STEP 4: Apply SigLIP Classification (REPLACES complex ReID)
+            # STEP 4: Apply SigLIP OCR Classification
             if self.siglip_classifier:
-                # Classify horses to specific individuals (1-9)
+                # Classify horses to specific numbers (0-9)
                 horse_class_ids = self.siglip_classifier.classify_detections(
                     frame, tracked_horses, 'horse'
                 )
@@ -483,35 +433,22 @@ class HybridPoseSystem:
                     tracked_horses, horse_class_ids, 'horse'
                 )
                 
-                # Classify jockeys to specific individuals (1-9)
-                jockey_class_ids = self.siglip_classifier.classify_detections(
-                    frame, jockey_detections, 'jockey'
-                )
-                jockey_detections = self.siglip_classifier.update_tracker_ids(
-                    jockey_detections, jockey_class_ids, 'jockey'
-                )
-                
                 # Update stats
-                stats['siglip_classifications'] = len(horse_class_ids) + len(jockey_class_ids)
-                stats['individual_identifications'] = np.sum(horse_class_ids >= 0) + np.sum(jockey_class_ids >= 0)
+                stats['siglip_classifications'] = len(horse_class_ids)
+                stats['horse_identifications'] = np.sum(horse_class_ids >= 0)
             
-            stats['humans_detected'] += len(jockey_detections) if sv else len(jockey_detections)
             stats['horses_detected'] += len(tracked_horses) if sv else len(tracked_horses)
             stats['tracked_horses'] = len(stats['active_horse_tracks'])
-            stats['tracked_humans'] = len(stats['active_human_tracks'])
             
-            # STEP 5: Estimate poses
-            human_poses = self.pose_manager.estimate_human_poses(frame, jockey_detections)
+            # STEP 5: Estimate horse poses
             horse_poses = self.pose_manager.estimate_horse_poses(frame, tracked_horses)
             
             # LOG: Pose estimation
-            self.debug_logger.log_pose_estimation(human_poses, horse_poses)
+            self.debug_logger.log_pose_estimation([], horse_poses)
             
             # STEP 6: Associate poses with track IDs
-            human_poses = self.associate_poses_with_tracks(human_poses, jockey_detections)
             horse_poses = self.associate_poses_with_tracks(horse_poses, tracked_horses)
             
-            stats['human_poses'] += len(human_poses)
             stats['horse_poses'] += len(horse_poses)
             
             # Count method wins for dual mode
@@ -521,13 +458,10 @@ class HybridPoseSystem:
                 stats['superanimal_wins'] += superanimal_count
                 stats['vitpose_wins'] += vitpose_count
             
-            # STEP 7: Visualize everything
-            frame = self.visualizer.annotate_detections_with_tracking(frame, jockey_detections, tracked_horses)
+            # STEP 7: Visualize horses only
+            frame = self.visualizer.annotate_detections_with_tracking(frame, sv.Detections.empty(), tracked_horses)
             
             # Draw poses with track IDs
-            for pose_result in human_poses:
-                frame = self.visualizer.draw_human_pose_with_tracking(frame, pose_result)
-            
             for pose_result in horse_poses:
                 frame = self.visualizer.draw_horse_pose_with_tracking(frame, pose_result)
             
@@ -535,13 +469,11 @@ class HybridPoseSystem:
             frame = self.visualizer.draw_pose_labels(frame, horse_poses)
             
             # Add info overlay
-            human_count = len(jockey_detections) if sv else len(jockey_detections)
             horse_count = len(tracked_horses) if sv else len(tracked_horses)
             
-            frame = self.draw_enhanced_info_overlay(
-                frame, frame_count, max_frames, human_count, horse_count,
-                len(human_poses), len(horse_poses), stats,
-                self.expected_horses, self.expected_jockeys
+            frame = self.draw_horse_info_overlay(
+                frame, frame_count, max_frames, horse_count,
+                len(horse_poses), stats, self.expected_horses
             )
             
             # Write frame to output video
@@ -571,9 +503,9 @@ class HybridPoseSystem:
             
             # Update progress bar
             if pbar:
-                tracker_status = f"BoostTrack:{len(stats['active_horse_tracks'])}H/{len(stats['active_human_tracks'])}J"
-                siglip_status = f"SigLIP:{stats['individual_identifications']}" if self.siglip_classifier else "SigLIP:OFF"
-                pbar.set_postfix_str(f"H:{human_count}/{self.expected_jockeys} Ho:{horse_count}/{self.expected_horses} {tracker_status} {siglip_status}")
+                tracker_status = f"{self.tracker_type}:{len(stats['active_horse_tracks'])}H"
+                ocr_status = f"OCR:{stats['horse_identifications']}" if self.siglip_classifier else "OCR:OFF"
+                pbar.set_postfix_str(f"Horses:{horse_count}/{self.expected_horses} {tracker_status} {ocr_status}")
                 pbar.update(1)
         
         self.cap.release()
@@ -589,32 +521,28 @@ class HybridPoseSystem:
         print(f"📊 Saving comprehensive debug logs...")
         log_files = self.debug_logger.save_logs(output_path)
         
-        print(f"✅ Quality-focused processing complete!")
+        print(f"✅ Horse-only OCR processing complete!")
         print(f"📊 Final Stats:")
-        print(f"   Target: {self.expected_horses} horses, {self.expected_jockeys} jockeys (main contenders)")
-        print(f"   Humans detected: {stats['humans_detected']}")
+        print(f"   Target: {self.expected_horses} horses")
         print(f"   Horses detected: {stats['horses_detected']}")
-        print(f"   Human poses: {stats['human_poses']}")
         print(f"   Horse poses: {stats['horse_poses']}")
-        print(f"   🔄 Unique tracks: {stats['tracked_humans']} humans, {stats['tracked_horses']} horses")
+        print(f"   🔄 Unique tracks: {stats['tracked_horses']} horses")
         
         # Quality assessment
         horse_quality = "EXCELLENT" if stats['tracked_horses'] <= self.expected_horses * 2 else "POOR"
-        human_quality = "EXCELLENT" if stats['tracked_humans'] <= self.expected_jockeys * 2 else "POOR"
-        print(f"   🏆 Tracking Quality: Horses {horse_quality}, Humans {human_quality}")
+        print(f"   🏆 Tracking Quality: Horses {horse_quality}")
         
         # Tracking method info
-        print(f"🎯 Tracking Method: BOOSTTRACK (Quality-Focused)")
+        print(f"🎯 Tracking Method: {self.tracker_type.upper()}")
         
-        # SigLIP classification info
+        # SigLIP OCR info
         if self.siglip_classifier:
-            print(f"🔍 SigLIP Individual Identification:")
+            print(f"🔢 SigLIP OCR Number Detection:")
             print(f"   - Total classifications: {stats['siglip_classifications']}")
-            print(f"   - Individual identifications: {stats['individual_identifications']}")
-            siglip_stats = self.siglip_classifier.get_classification_stats()
-            # print(f"   - Horse templates: {siglip_stats['horse_templates']}")
-            print(f"   - siglip_stats: {siglip_stats}")
-            print(f"   - Features: Reference image based identification")
+            print(f"   - Horse identifications: {stats['horse_identifications']}")
+            ocr_stats = self.siglip_classifier.get_classification_stats()
+            print(f"   - Trackable horses: {ocr_stats['trackable_horses']}")
+            print(f"   - Classification accuracy: {ocr_stats['accuracy']:.3f}" if ocr_stats['accuracy'] else "   - Classification accuracy: Not available")
         
         if self.config.horse_pose_estimator == 'dual':
             print(f"🥊 Competition Results:")
@@ -625,40 +553,45 @@ class HybridPoseSystem:
         
         return output_path
     
-    def draw_enhanced_info_overlay(self, frame: np.ndarray, frame_count: int, max_frames: int, 
-                                 human_count: int, horse_count: int, human_poses: int, 
-                                 horse_poses: int, stats: dict = None,
-                                 expected_horses: int = 9, expected_jockeys: int = 9):
-        """Draw enhanced info overlay with BoostTrack + SigLIP statistics"""
+    def draw_horse_info_overlay(self, frame: np.ndarray, frame_count: int, max_frames: int, 
+                               horse_count: int, horse_poses: int, stats: dict = None,
+                               expected_horses: int = 9):
+        """Draw horse-only info overlay with dynamic OCR statistics"""
         total_display = str(max_frames) if max_frames != float('inf') else "∞"
+        
+        # Get dynamic trackable horses
+        trackable_horses = []
+        if self.siglip_classifier and hasattr(self.siglip_classifier, 'valid_classes'):
+            trackable_horses = sorted(list(self.siglip_classifier.valid_classes))
         
         info_lines = [
             f"Frame: {frame_count+1}/{total_display}",
-            f"Quality Focus: {expected_horses} horses, {expected_jockeys} jockeys (main contenders)",
-            f"Config: H-Det:{self.config.human_detector} H-Pose:{self.config.human_pose_estimator}",
-            f"        Horse-Det:{self.config.horse_detector} Horse-Pose:{self.config.horse_pose_estimator}",
-            f"Tracked - Jockeys:{human_count}/{expected_jockeys} Horses:{horse_count}/{expected_horses}",
-            f"Poses - Humans:{human_poses} Horses:{horse_poses}",
+            f"Horse Focus: {len(trackable_horses)} trackable horses {trackable_horses}" if trackable_horses else f"Horse Focus: {expected_horses} horses with OCR detection",
+            f"Config: Horse-Det:{self.config.horse_detector} Horse-Pose:{self.config.horse_pose_estimator}",
+            f"Tracked Horses: {horse_count}",
+            f"Horse Poses: {horse_poses}",
         ]
         
         # Add tracking statistics
         if stats:
-            tracked_humans = stats.get('tracked_humans', 0)
             tracked_horses = stats.get('tracked_horses', 0)
-            info_lines.append(f"🔄 Unique Tracks - Humans:{tracked_humans} Horses:{tracked_horses}")
+            info_lines.append(f"🔄 Unique Horse Tracks: {tracked_horses}")
         
         # Add tracking method info
-        info_lines.append(f"🎯 Tracking Method: BOOSTTRACK")
+        info_lines.append(f"🎯 Tracking Method: {self.tracker_type.upper()}")
         
-        # Add SigLIP classification info
+        # Add SigLIP OCR info
         if self.siglip_classifier and stats:
-            individual_ids = stats.get('individual_identifications', 0)
+            horse_ids = stats.get('horse_identifications', 0)
             total_classifications = stats.get('siglip_classifications', 0)
             
-            info_lines.append(f"🔍 SigLIP Individual ID: {individual_ids}/{total_classifications} identified")
-            info_lines.append(f"   Features: Reference image based | Horse IDs: 100-108, Jockey IDs: 200-208")
+            if trackable_horses:
+                info_lines.append(f"🔢 SigLIP OCR: {horse_ids}/{total_classifications} identified | Horses: {trackable_horses}")
+            else:
+                info_lines.append(f"🔢 SigLIP OCR: {horse_ids}/{total_classifications} identified")
+            info_lines.append(f"   Features: OCR training on detected numbers only")
         else:
-            info_lines.append(f"🔍 SigLIP Individual ID: DISABLED")
+            info_lines.append(f"🔢 SigLIP OCR Detection: DISABLED")
         
         info_lines.append(f"📊 Debug logging: ENABLED (logs saved at end)")
         
@@ -696,7 +629,6 @@ def main():
     video_path = getattr(config, 'video_path', None)
     if not video_path:
         print("❌ Error: Config file must specify 'video_path'")
-        print("Available config attributes:", [attr for attr in dir(config) if not attr.startswith('_')])
         sys.exit(1)
     
     # Auto-detect device if not specified
@@ -710,7 +642,7 @@ def main():
         sys.exit(1)
     
     try:
-        system = HybridPoseSystem(video_path, config)
+        system = HorseTrackingSystem(video_path, config)
         system.process_video()
     except Exception as e:
         print(f"❌ Error: {e}")
