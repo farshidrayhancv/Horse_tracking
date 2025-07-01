@@ -50,20 +50,16 @@ except ImportError:
 
 try:
     import supervision as sv
-    from supervision import ByteTrack
     print("✓ Supervision available")
 except ImportError:
     print("❌ Supervision not available - install with: pip install supervision")
     sv = None
 
 try:
-    from boxmot import BoostTrack, DeepOcSort
-    BOOSTTRACK_AVAILABLE = True
+    from boxmot import DeepOcSort
     DEEPOCSORT_AVAILABLE = True
-    print("✓ BoostTrack available")
     print("✓ DeepOcSort available")
 except ImportError:
-    BOOSTTRACK_AVAILABLE = False
     DEEPOCSORT_AVAILABLE = False
     print("⚠️ BoxMOT trackers not available - install with: pip install boxmot")
 
@@ -95,7 +91,7 @@ class HorseTrackingSystem:
             self.total_frames = float('inf')
         
         # Setup tracking
-        self.setup_trackers()
+        self.setup_tracker()
         
         # Setup models and components
         self.setup_models()
@@ -125,28 +121,20 @@ class HorseTrackingSystem:
         print(f"⚠️ Could not parse count from filename '{filename}', using quality-focused defaults")
         return 9  # Default to 9 horses for quality tracking
     
-    def setup_trackers(self):
+    def setup_tracker(self):
         """Initialize Deep OC-SORT tracker for horses only"""
         if not sv:
             raise RuntimeError("❌ Supervision not available - install with: pip install supervision")
         
-        tracker_type = getattr(self.config, 'tracker_type', 'deepocsort')
+        if not DEEPOCSORT_AVAILABLE:
+            raise RuntimeError("❌ DeepOCSORT not available - install with: pip install boxmot")
         
-        if tracker_type == 'deepocsort' and DEEPOCSORT_AVAILABLE:
-            self.setup_deepocsort()
-        elif tracker_type == 'boosttrack' and BOOSTTRACK_AVAILABLE:
-            self.setup_boosttrack()
-        else:
-            raise RuntimeError(f"❌ {tracker_type} not available - install with: pip install boxmot")
-    
-    def setup_deepocsort(self):
-        """Initialize Deep OC-SORT for horses"""
         try:
             deepocsort_config = getattr(self.config, 'deepocsort_config', {})
             
             # Quality-focused defaults for Deep OC-SORT
             quality_defaults = {
-                'max_age': 200,
+                'max_age': 100,
                 'min_hits': 5,
                 'det_thresh': 0.65,
                 'iou_threshold': 0.3,
@@ -159,7 +147,7 @@ class HorseTrackingSystem:
                 'w_association_emb': 0.6,
                 'alpha_fixed_emb': 0.9,
                 'aw_param': 0.5,
-                'embedding_off': False,
+                'embedding_off': True,
                 'cmc_off': False,
                 'aw_off': False,
             }
@@ -209,44 +197,6 @@ class HorseTrackingSystem:
         except Exception as e:
             print(f"❌ Deep OC-SORT initialization failed: {e}")
             raise RuntimeError(f"Failed to initialize Deep OC-SORT: {e}")
-    
-    def setup_boosttrack(self):
-        """Initialize BoostTrack for horses"""
-        try:
-            boosttrack_config = getattr(self.config, 'boosttrack_config', {})
-            
-            # Force all config parameters to correct types
-            typed_config = {}
-            for key, value in boosttrack_config.items():
-                if key in ['max_age', 'min_hits']:
-                    typed_config[key] = int(value)
-                elif key in ['det_thresh', 'iou_threshold', 'lambda_iou', 'lambda_mhd', 'lambda_shape', 'dlo_boost_coef', 'aspect_ratio_thresh']:
-                    typed_config[key] = float(value)
-                elif key in ['use_ecc', 'use_dlo_boost', 'use_duo_boost', 's_sim_corr', 'use_rich_s', 'use_sb', 'use_vt', 'with_reid']:
-                    typed_config[key] = bool(value)
-                elif key in ['min_box_area']:
-                    typed_config[key] = int(value)
-                else:
-                    typed_config[key] = value
-            
-            typed_config['with_reid'] = True
-            device_id = 0 if self.config.device == 'cuda' else 'cpu'
-            reid_weights_path = Path('osnet_x0_25_msmt17.pt')
-            
-            self.horse_tracker = BoostTrack(
-                reid_weights=reid_weights_path,
-                device=device_id,
-                half=True,
-                with_reid=True,
-                **typed_config
-            )
-            
-            self.tracker_type = 'boosttrack'
-            print(f"✅ BoostTrack + ReID initialized for horses")
-            
-        except Exception as e:
-            print(f"❌ BoostTrack initialization failed: {e}")
-            raise RuntimeError(f"Failed to initialize BoostTrack: {e}")
     
     def setup_models(self):
         # Setup SuperAnimal model if needed
