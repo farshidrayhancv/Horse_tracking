@@ -1,5 +1,5 @@
 # Video file path (required) - filename format: horse_XX.mp4 where XX = number of horses
-video_path: inputs/horse_11.mp4  # Will automatically detect 22 horses + 22 jockeys
+video_path: inputs/horse_9.mp4  # Will automatically detect 22 horses + 22 jockeys
 
 # Output settings
 output_path: null  # Auto-generate if null (will include "_rgb_d_reid_tracked_" in filename)
@@ -9,14 +9,14 @@ display: false
 human_detector: rtdetr
 horse_detector: rtdetr  # Options: rtdetr, superanimal (NOT RECOMMENDED VERY SLOW), both
 human_pose_estimator: vitpose
-horse_pose_estimator: superanimal # Options: superanimal (better), vitpose, dual
+horse_pose_estimator: vitpose # Options: superanimal (better), vitpose, dual
 
 # NEW: SAM model selection
 sam_model: sam2  # Options: sam2 (latest Meta model, more accurate), mobilesam (faster), none (no segmentation)
 
 # Separate confidence thresholds for each model
-confidence_human_detection: 0.5
-confidence_horse_detection: 0.5
+confidence_human_detection: 0.7
+confidence_horse_detection: 0.7
 confidence_human_pose: 0.5
 confidence_horse_pose_superanimal: 0.5
 confidence_horse_pose_vitpose: 0.5
@@ -37,8 +37,8 @@ enable_depth_anything: true      # Enable Depth-Anything for depth estimation
 enable_megadescriptor: true      # Enable MegaDescriptor for feature extraction
 
 # RGB-D Fusion Settings (Advanced)
-rgb_weight: 0.5                  # Weight for RGB features (0.0-1.0)
-depth_weight: 0.5                # Weight for depth shape features (0.0-1.0)
+rgb_weight: 0.3                  # Weight for RGB features (0.0-1.0)
+depth_weight: 0.7                # Weight for depth shape features (0.0-1.0)
 depth_shape_consistency: true    # Enable depth shape consistency checking
 consistency_bonus_threshold: 0.4 # Threshold for consistency bonus
 

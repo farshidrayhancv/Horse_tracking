@@ -306,16 +306,27 @@ class HybridPoseSystem:
             else:
                 jockey_detections = tracked_humans
             
+
             # 🔥 STEP 4: Apply Enhanced RGB-D Re-identification Pipeline
             depth_map = None
             if self.reid_pipeline and self.config.enable_reid_pipeline:
                 # Process horses with RGB-D re-identification
                 horse_rgb_crops, horse_depth_crops, depth_map, horse_reid_features, horse_depth_stats = self.reid_pipeline.process_frame(frame, tracked_horses)
-                tracked_horses_enhanced = self.reid_pipeline.enhance_tracking(tracked_horses, horse_reid_features, horse_depth_stats)
+                tracked_horses_enhanced = self.reid_pipeline.enhance_tracking(
+                    tracked_horses, 
+                    horse_reid_features, 
+                    horse_depth_stats,
+                    expected_count=self.expected_horses  # Pass expected horse count
+                )
                 
                 # Process jockeys with RGB-D re-identification  
                 jockey_rgb_crops, jockey_depth_crops, _, jockey_reid_features, jockey_depth_stats = self.reid_pipeline.process_frame(frame, jockey_detections)
-                jockey_detections_enhanced = self.reid_pipeline.enhance_tracking(jockey_detections, jockey_reid_features, jockey_depth_stats)
+                jockey_detections_enhanced = self.reid_pipeline.enhance_tracking(
+                    jockey_detections, 
+                    jockey_reid_features, 
+                    jockey_depth_stats,
+                    expected_count=self.expected_jockeys  # Pass expected jockey count
+                )
                 
                 # Get current reassignment count
                 stats['reid_reassignments'] = self.reid_pipeline.get_reassignment_count()

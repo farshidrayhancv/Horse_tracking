@@ -593,8 +593,8 @@ class ReIDPipeline:
         
         return rgb_crops, depth_crops, depth_map, rgbd_features, depth_shape_stats
     
-    def enhance_tracking(self, detections, reid_features, depth_stats=None):
-        """Enhanced tracking with RGB-D re-identification and depth consistency"""
+    def enhance_tracking(self, detections, reid_features, depth_stats=None, expected_count=None):
+        """Enhanced tracking with capacity-aware RGB-D re-identification"""
         if not sv or len(detections) == 0 or len(reid_features) == 0:
             return detections
         
@@ -602,8 +602,13 @@ class ReIDPipeline:
         if depth_stats is None:
             depth_stats = [{}] * len(reid_features)
         
+        # Get expected count from config if not provided
+        if expected_count is None:
+            expected_count = 10  # Default fallback
+        
         # Create a copy to modify
         enhanced_detections = detections
+        current_count = len(enhanced_detections)
         
         if hasattr(detections, 'tracker_id'):
             original_track_ids = enhanced_detections.tracker_id.copy()
@@ -616,44 +621,94 @@ class ReIDPipeline:
                 valid_depth_stats = [depth_stats[i] for i in np.where(valid_tracks)[0]]
                 self.update_track_embeddings_with_depth(valid_track_ids, valid_features, valid_depth_stats)
             
-            # Process lost/unassigned tracks for re-identification
-            lost_tracks = enhanced_detections.tracker_id < 0
-            if np.any(lost_tracks):
-                lost_indices = np.where(lost_tracks)[0]
-                lost_features = reid_features[lost_tracks]
-                lost_depth_stats = [depth_stats[i] for i in lost_indices]
-                
-                for i, (feature, depth_stat) in enumerate(zip(lost_features, lost_depth_stats)):
-                    original_idx = lost_indices[i]
-                    
-                    # Try to find a match using RGB-D features and depth consistency
-                    best_match = self.find_best_match_with_depth(feature, depth_stat, threshold=0.35)
-                    
-                    if best_match >= 0:
-                        # Reassign the track ID
-                        enhanced_detections.tracker_id[original_idx] = best_match
-                        self.reassignment_count += 1
-                        model_name = "SAM2" if self.sam_model_type == 'sam2' else "MobileSAM"
-                        print(f"🔄 RGB-D+{model_name} Re-identified: Detection → Track {best_match} (reassignment #{self.reassignment_count})")
-                        
-                        # Update the track's embeddings with this new feature
-                        if best_match not in self.track_embeddings:
-                            self.track_embeddings[best_match] = []
-                        self.track_embeddings[best_match].append(feature)
-                        
-                        if len(self.track_embeddings[best_match]) > self.embedding_history_size:
-                            self.track_embeddings[best_match].pop(0)
-                        
-                        # Update depth statistics
-                        if depth_stat and best_match not in self.track_depth_stats:
-                            self.track_depth_stats[best_match] = []
-                        if depth_stat:
-                            self.track_depth_stats[best_match].append(depth_stat)
-                            if len(self.track_depth_stats[best_match]) > self.embedding_history_size:
-                                self.track_depth_stats[best_match].pop(0)
+            # NEW LOGIC: Capacity-aware re-identification
+            if current_count >= expected_count:
+                # AT CAPACITY: All new detections must be reassignments to existing tracks
+                self._handle_at_capacity_scenario(enhanced_detections, reid_features, depth_stats, expected_count)
+            else:
+                # BELOW CAPACITY: Check if new detections match existing or are truly new
+                self._handle_below_capacity_scenario(enhanced_detections, reid_features, depth_stats, expected_count)
         
         return enhanced_detections
-    
+
+    def _handle_at_capacity_scenario(self, detections, reid_features, depth_stats, expected_count):
+        """Handle re-identification when at maximum capacity"""
+        print(f"🔍 At capacity ({expected_count}): Reassigning all new IDs to existing tracks")
+        
+        # All detections should be matched to existing tracks
+        for i, (feature, depth_stat) in enumerate(zip(reid_features, depth_stats)):
+            current_track_id = detections.tracker_id[i]
+            
+            # Find best match among existing tracks
+            best_match = self.find_best_match_with_depth(feature, depth_stat, threshold=0.25)  # Lower threshold
+            
+            if best_match >= 0 and best_match != current_track_id:
+                # Reassign to existing track
+                detections.tracker_id[i] = best_match
+                self.reassignment_count += 1
+                
+                model_name = "SAM2" if self.sam_model_type == 'sam2' else "MobileSAM"
+                print(f"🔄 RGB-D+{model_name} At-Capacity Reassign: Track {current_track_id} → {best_match}")
+                
+                # Update embeddings
+                self._update_track_with_new_feature(best_match, feature, depth_stat)
+
+    def _handle_below_capacity_scenario(self, detections, reid_features, depth_stats, expected_count):
+        """Handle re-identification when below maximum capacity"""
+        current_count = len(detections)
+        print(f"🔍 Below capacity ({current_count}/{expected_count}): Checking for matches vs new racers")
+        
+        # Process each detection
+        for i, (feature, depth_stat) in enumerate(zip(reid_features, depth_stats)):
+            current_track_id = detections.tracker_id[i]
+            
+            # Check if this matches any existing track
+            best_match = self.find_best_match_with_depth(feature, depth_stat, threshold=0.35)  # Standard threshold
+            
+            if best_match >= 0 and best_match != current_track_id:
+                # Strong match found - reassign
+                detections.tracker_id[i] = best_match
+                self.reassignment_count += 1
+                
+                model_name = "SAM2" if self.sam_model_type == 'sam2' else "MobileSAM"
+                print(f"🔄 RGB-D+{model_name} Below-Capacity Match: Track {current_track_id} → {best_match}")
+                
+                # Update embeddings
+                self._update_track_with_new_feature(best_match, feature, depth_stat)
+            else:
+                # No strong match - this could be a new racer
+                confidence = detections.confidence[i] if hasattr(detections, 'confidence') else 1.0
+                
+                if confidence > 0.6:  # High confidence new detection
+                    print(f"🆕 New racer detected: Track {current_track_id} (conf: {confidence:.3f})")
+                    # Keep the assigned track ID and add to embeddings
+                    self._update_track_with_new_feature(current_track_id, feature, depth_stat)
+                else:
+                    # Low confidence - might be false positive or partial occlusion
+                    weak_match = self.find_best_match_with_depth(feature, depth_stat, threshold=0.20)  # Very low threshold
+                    if weak_match >= 0:
+                        detections.tracker_id[i] = weak_match
+                        self.reassignment_count += 1
+                        print(f"🔄 Weak match reassign: Track {current_track_id} → {weak_match} (conf: {confidence:.3f})")
+                        self._update_track_with_new_feature(weak_match, feature, depth_stat)
+
+    def _update_track_with_new_feature(self, track_id, feature, depth_stat):
+        """Update track embeddings with new feature"""
+        # Update RGB-D embeddings
+        if track_id not in self.track_embeddings:
+            self.track_embeddings[track_id] = []
+        self.track_embeddings[track_id].append(feature)
+        if len(self.track_embeddings[track_id]) > self.embedding_history_size:
+            self.track_embeddings[track_id].pop(0)
+        
+        # Update depth statistics
+        if depth_stat and track_id not in self.track_depth_stats:
+            self.track_depth_stats[track_id] = []
+        if depth_stat:
+            self.track_depth_stats[track_id].append(depth_stat)
+            if len(self.track_depth_stats[track_id]) > self.embedding_history_size:
+                self.track_depth_stats[track_id].pop(0)
+        
     def get_current_masks(self):
         """Get current frame's segmentation masks for visualization"""
         return self.current_masks
