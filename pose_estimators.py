@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import cv2
+from typing import List, Dict
 
 try:
     import supervision as sv
@@ -13,7 +14,7 @@ try:
 except ImportError:
     VITPOSE_AVAILABLE = False
 
-class PoseEstimationManager:
+class SimplifiedPoseEstimationManager:
     def __init__(self, config, superanimal_model=None):
         self.config = config
         self.superanimal = superanimal_model
@@ -21,65 +22,23 @@ class PoseEstimationManager:
         # Setup ViTPose models
         self.vitpose_processor = None
         self.vitpose_model = None
-        self.vitpose_horse_processor = None
-        self.vitpose_horse_model = None
         
-        self.setup_vitpose_models()
+        self.setup_vitpose_model()
     
-    def setup_vitpose_models(self):
-        # ViTPose for humans
-        if self.config.human_pose_estimator == 'vitpose':
+    def setup_vitpose_model(self):
+        """Initialize ViTPose model if needed"""
+        if self.config.horse_pose_estimator in ['vitpose', 'both']:
             if VITPOSE_AVAILABLE:
                 try:
                     self.vitpose_processor = AutoProcessor.from_pretrained("usyd-community/vitpose-base-simple")
                     self.vitpose_model = VitPoseForPoseEstimation.from_pretrained("usyd-community/vitpose-base-simple")
                     self.vitpose_model.to(self.config.device)
-                    print("✅ ViTPose (humans) loaded")
+                    print("✅ ViTPose loaded for compound racer detection")
                 except Exception as e:
                     print(f"⚠️ ViTPose failed: {e}")
-        
-        # ViTPose for horses (if needed)
-        if self.config.horse_pose_estimator in ['vitpose', 'dual']:
-            if VITPOSE_AVAILABLE:
-                try:
-                    self.vitpose_horse_processor = AutoProcessor.from_pretrained("usyd-community/vitpose-base-simple")
-                    self.vitpose_horse_model = VitPoseForPoseEstimation.from_pretrained("usyd-community/vitpose-base-simple")
-                    self.vitpose_horse_model.to(self.config.device)
-                    print("✅ ViTPose (for horses) loaded")
-                except Exception as e:
-                    print(f"⚠️ ViTPose for horses failed: {e}")
     
-    def select_best_pose_in_box(self, poses_in_box, method_name="Unknown"):
-        """
-        If multiple pose candidates are found within a single detection box,
-        select the one with highest confidence (main subject).
-        """
-        if not poses_in_box or len(poses_in_box) == 0:
-            return None
-        
-        if len(poses_in_box) == 1:
-            return poses_in_box[0]
-        
-        # Multiple poses detected in same box - pick best one
-        best_pose = None
-        best_confidence = -1
-        
-        for pose in poses_in_box:
-            if 'confidence' in pose and pose['confidence'] > best_confidence:
-                best_confidence = pose['confidence']
-                best_pose = pose
-        
-        if best_pose is None:
-            best_pose = poses_in_box[0]  # Fallback to first
-        
-        print(f"🎯 {method_name}: Selected best pose (conf: {best_confidence:.3f}) from {len(poses_in_box)} candidates in same box")
-        return best_pose
-    
-    def estimate_human_poses(self, frame: np.ndarray, detections):
-        """Human pose estimation - ONE pose per detection box"""
-        if self.config.human_pose_estimator == 'none':
-            return []
-        
+    def estimate_poses_on_racers(self, frame: np.ndarray, detections) -> List[Dict]:
+        """Estimate poses on compound racer entities (horse+jockey in same box)"""
         if not sv or len(detections) == 0:
             return []
         
@@ -123,7 +82,7 @@ class PoseEstimationManager:
         
         for box_idx in range(num_boxes):
             # Get poses for this box (should be just one, but might be multiple or zero)
-            poses_for_this_box = [p for p in poses if p.get('box_index') == box_idx]
+            poses_for_this_box = [p for i, p in enumerate(poses) if i == box_idx]
             
             if poses_for_this_box:
                 # Select best pose for this box
@@ -132,123 +91,64 @@ class PoseEstimationManager:
                     final_poses.append(best_pose)
             # If no pose for this box, we skip it (don't add empty placeholder)
         
-        return final_poses
+        return all_poses
     
-    def _estimate_vitpose_human(self, frame: np.ndarray, detections):
-        """ViTPose for humans - processes each detection box independently"""
-        if not self.vitpose_model or not sv or len(detections) == 0:
-            return []
-        
-        try:
-            from PIL import Image
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            pil_image = Image.fromarray(frame_rgb)
-            
-            # Process each detection box independently to ensure one pose per box
-            all_poses = []
-            
-            for box_idx, box in enumerate(detections.xyxy):
-                # Convert single box to COCO format
-                x1, y1, x2, y2 = box
-                coco_box = [x1, y1, x2-x1, y2-y1]  # [x, y, width, height]
-                
-                inputs = self.vitpose_processor(pil_image, boxes=[[coco_box]], return_tensors="pt").to(self.config.device)
-                
-                with torch.no_grad():
-                    outputs = self.vitpose_model(**inputs)
-                
-                pose_results = self.vitpose_processor.post_process_pose_estimation(outputs, boxes=[[coco_box]])
-                
-                # Process result for this specific box
-                if pose_results and len(pose_results[0]) > 0:
-                    # Take only the first (best) pose for this box
-                    pose_result = pose_results[0][0]
-                    
-                    keypoints = pose_result['keypoints'].cpu().numpy() if hasattr(pose_result['keypoints'], 'cpu') else pose_result['keypoints']
-                    scores = pose_result['scores'].cpu().numpy() if hasattr(pose_result['scores'], 'cpu') else pose_result['scores']
-                    
-                    # Apply confidence filtering
-                    conf_threshold = self.config.confidence_human_pose
-                    filtered_keypoints = []
-                    filtered_scores = []
-                    valid_count = 0
-                    total_confidence = 0.0
-                    
-                    for kpt, score in zip(keypoints, scores):
-                        if score > conf_threshold:
-                            filtered_keypoints.append(kpt)
-                            filtered_scores.append(score)
-                            valid_count += 1
-                            total_confidence += score
-                        else:
-                            filtered_keypoints.append([-1.0, -1.0])
-                            filtered_scores.append(0.0)
-                    
-                    avg_confidence = total_confidence / valid_count if valid_count > 0 else 0.0
-                    
-                    # Create pose result with confidence
-                    pose_with_confidence = {
-                        'keypoints': torch.tensor(filtered_keypoints) if hasattr(pose_result['keypoints'], 'cpu') else np.array(filtered_keypoints),
-                        'scores': torch.tensor(filtered_scores) if hasattr(pose_result['scores'], 'cpu') else np.array(filtered_scores),
-                        'confidence': avg_confidence,
-                        'box_index': box_idx
-                    }
-                    
-                    all_poses.append(pose_with_confidence)
-            
-            return all_poses
-            
-        except Exception as e:
-            print(f"Error in human pose estimation: {e}")
-            return []
-    
-    def _estimate_superanimal_only(self, frame: np.ndarray, detections):
-        """SuperAnimal pose estimation - already processes each box independently"""
+    def _estimate_superanimal_on_box(self, frame: np.ndarray, bbox: np.ndarray, box_index: int) -> List[Dict]:
+        """Run SuperAnimal pose estimation on single racer box"""
         if not self.superanimal:
             return []
         
-        if not sv or len(detections) == 0:
+        try:
+            # Create a single detection for SuperAnimal
+            single_detection = sv.Detections(
+                xyxy=np.array([bbox]),
+                confidence=np.array([0.8]),
+                class_id=np.array([0])
+            )
+            
+            # Estimate pose using SuperAnimal
+            poses = self.superanimal.estimate_pose(frame, single_detection)
+            
+            # Add metadata
+            for pose in poses:
+                pose['compound_box_index'] = box_index
+                pose['pose_source'] = 'SuperAnimal'
+                if 'method' not in pose:
+                    pose['method'] = 'SuperAnimal'
+            
+            return poses
+            
+        except Exception as e:
+            print(f"❌ SuperAnimal pose estimation failed on box {box_index}: {e}")
             return []
-        
-        # SuperAnimal.estimate_pose already processes each box independently
-        # and applies confidence filtering at source
-        poses = self.superanimal.estimate_pose(frame, detections)
-        
-        # Add box index for tracking
-        for i, pose in enumerate(poses):
-            pose['box_index'] = i
-        
-        return poses
     
-    def _estimate_vitpose_horse_only(self, frame: np.ndarray, detections):
-        """ViTPose for horses - processes each detection box independently"""
-        if not self.vitpose_horse_model or not sv or len(detections) == 0:
+    def _estimate_vitpose_on_box(self, frame: np.ndarray, bbox: np.ndarray, box_index: int) -> List[Dict]:
+        """Run ViTPose on single racer box"""
+        if not self.vitpose_model or not self.vitpose_processor:
             return []
         
         try:
             from PIL import Image
+            
+            # Convert frame
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             pil_image = Image.fromarray(frame_rgb)
             
-            # Process each detection box independently
-            all_poses = []
+            # Convert bbox to COCO format
+            x1, y1, x2, y2 = bbox
+            coco_box = [x1, y1, x2-x1, y2-y1]
             
-            for box_idx, box in enumerate(detections.xyxy):
-                # Convert single box to COCO format
-                x1, y1, x2, y2 = box
-                coco_box = [x1, y1, x2-x1, y2-y1]
-                
-                inputs = self.vitpose_horse_processor(pil_image, boxes=[[coco_box]], return_tensors="pt").to(self.config.device)
-                
-                with torch.no_grad():
-                    outputs = self.vitpose_horse_model(**inputs)
-                
-                pose_results = self.vitpose_horse_processor.post_process_pose_estimation(outputs, boxes=[[coco_box]])
-                
-                if pose_results and len(pose_results[0]) > 0:
-                    # Take only the first (best) pose for this box
-                    pose_result = pose_results[0][0]
-                    
+            # Process with ViTPose
+            inputs = self.vitpose_processor(pil_image, boxes=[[coco_box]], return_tensors="pt").to(self.config.device)
+            
+            with torch.no_grad():
+                outputs = self.vitpose_model(**inputs)
+            
+            pose_results = self.vitpose_processor.post_process_pose_estimation(outputs, boxes=[[coco_box]])
+            
+            converted_poses = []
+            if pose_results and len(pose_results[0]) > 0:
+                for pose_result in pose_results[0]:
                     keypoints = pose_result['keypoints'].cpu().numpy() if hasattr(pose_result['keypoints'], 'cpu') else pose_result['keypoints']
                     scores = pose_result['scores'].cpu().numpy() if hasattr(pose_result['scores'], 'cpu') else pose_result['scores']
                     
@@ -270,60 +170,77 @@ class PoseEstimationManager:
                     
                     converted_pose = {
                         'keypoints': np.array(filtered_keypoints),
-                        'box': box,
+                        'box': bbox,
                         'method': 'ViTPose',
                         'confidence': avg_confidence,
-                        'box_index': box_idx
+                        'compound_box_index': box_index,
+                        'pose_source': 'ViTPose',
+                        'valid_keypoints': valid_count
                     }
                     
-                    all_poses.append(converted_pose)
+                    converted_poses.append(converted_pose)
             
-            return all_poses
+            return converted_poses
             
         except Exception as e:
-            print(f"Error in ViTPose horse estimation: {e}")
+            print(f"❌ ViTPose estimation failed on box {box_index}: {e}")
             return []
     
-    def _estimate_dual_competition(self, frame: np.ndarray, detections):
-        """Dual competition mode - ONE pose per box, best method wins"""
-        if not sv or len(detections) == 0:
-            return []
+    def filter_poses_by_confidence(self, poses: List[Dict]) -> List[Dict]:
+        """Filter poses by confidence thresholds"""
+        filtered_poses = []
         
-        # Get poses from both methods - each processes boxes independently
-        superanimal_poses = self._estimate_superanimal_only(frame, detections)
-        vitpose_poses = self._estimate_vitpose_horse_only(frame, detections)
-        
-        # Competition: Pick best pose per detection box
-        best_poses = []
-        num_boxes = len(detections)
-        
-        for box_idx in range(num_boxes):
-            superanimal_conf = 0.0
-            vitpose_conf = 0.0
-            superanimal_pose = None
-            vitpose_pose = None
+        for pose in poses:
+            method = pose.get('method', 'unknown')
+            confidence = pose.get('confidence', 0.0)
             
-            # Find SuperAnimal pose for this box
-            for pose in superanimal_poses:
-                if pose.get('box_index') == box_idx:
-                    superanimal_conf = pose['confidence']
-                    superanimal_pose = pose
-                    break
+            # Apply method-specific thresholds
+            if method == 'SuperAnimal':
+                threshold = self.config.confidence_horse_pose_superanimal
+            elif method == 'ViTPose':
+                threshold = self.config.confidence_horse_pose_vitpose
+            else:
+                threshold = 0.3  # Default
             
-            # Find ViTPose pose for this box
-            for pose in vitpose_poses:
-                if pose.get('box_index') == box_idx:
-                    vitpose_conf = pose['confidence']
-                    vitpose_pose = pose
-                    break
-            
-            # Pick the winner for this specific box
-            if superanimal_conf > vitpose_conf and superanimal_pose:
-                best_poses.append(superanimal_pose)
-                print(f"🏆 Box {box_idx+1}: SuperAnimal wins (conf: {superanimal_conf:.3f} vs {vitpose_conf:.3f})")
-            elif vitpose_conf > 0 and vitpose_pose:
-                best_poses.append(vitpose_pose)
-                print(f"🏆 Box {box_idx+1}: ViTPose wins (conf: {vitpose_conf:.3f} vs {superanimal_conf:.3f})")
-            # If neither has confidence > 0, no pose for this box
+            if confidence >= threshold:
+                filtered_poses.append(pose)
+            else:
+                print(f"🔽 Filtered out {method} pose (conf: {confidence:.3f} < {threshold})")
         
-        return best_poses
+        return filtered_poses
+    
+    def group_poses_by_racer(self, poses: List[Dict]) -> Dict[int, List[Dict]]:
+        """Group poses by compound racer box index"""
+        grouped = {}
+        
+        for pose in poses:
+            box_index = pose.get('compound_box_index', -1)
+            if box_index not in grouped:
+                grouped[box_index] = []
+            grouped[box_index].append(pose)
+        
+        return grouped
+    
+    def get_pose_statistics(self, poses: List[Dict]) -> Dict:
+        """Get statistics about pose estimation results"""
+        if not poses:
+            return {
+                'total_poses': 0,
+                'superanimal_count': 0,
+                'vitpose_count': 0,
+                'avg_confidence': 0.0,
+                'racers_with_poses': 0
+            }
+        
+        superanimal_count = len([p for p in poses if p.get('method') == 'SuperAnimal'])
+        vitpose_count = len([p for p in poses if p.get('method') == 'ViTPose'])
+        avg_confidence = np.mean([p.get('confidence', 0.0) for p in poses])
+        unique_racers = len(set(p.get('compound_box_index', -1) for p in poses))
+        
+        return {
+            'total_poses': len(poses),
+            'superanimal_count': superanimal_count,
+            'vitpose_count': vitpose_count,
+            'avg_confidence': float(avg_confidence),
+            'racers_with_poses': unique_racers
+        }

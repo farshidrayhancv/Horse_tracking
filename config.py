@@ -4,30 +4,6 @@ from pathlib import Path
 
 class Config:
     def __init__(self, config_file: str = None):
-        # Available detectors
-        self.HUMAN_DETECTORS = {
-            'rtdetr': 'RT-DETR (HuggingFace)',
-            'superanimal': 'SuperAnimal Faster R-CNN (fallback only)'
-        }
-        
-        self.HORSE_DETECTORS = {
-            'rtdetr': 'RT-DETR (HuggingFace)', 
-            'superanimal': 'SuperAnimal Faster R-CNN',
-            'both': 'RT-DETR primary + SuperAnimal fallback'
-        }
-        
-        self.HUMAN_POSE_ESTIMATORS = {
-            'vitpose': 'ViTPose 17 keypoints (HuggingFace)',
-            'none': 'No human pose estimation'
-        }
-        
-        self.HORSE_POSE_ESTIMATORS = {
-            'superanimal': 'SuperAnimal 39 keypoints only',
-            'vitpose': 'ViTPose 17 keypoints only (treats horses as humans)',
-            'dual': 'Dual competition: SuperAnimal vs ViTPose (best confidence wins)',
-            'none': 'No horse pose estimation'
-        }
-        
         # ===== BASIC CONFIGURATION =====
         self.video_path = None
         self.output_path = None
@@ -35,64 +11,53 @@ class Config:
         self.device = "cuda"
         self.max_frames = None
         
-        # Model selection defaults
-        self.human_detector = 'rtdetr'
-        self.horse_detector = 'rtdetr'
-        self.human_pose_estimator = 'vitpose'
-        self.horse_pose_estimator = 'superanimal'
+        # ===== ROBOFLOW API CONFIGURATION =====
+        self.roboflow_api_key = None
+        self.roboflow_model_id = None
+        self.roboflow_confidence = 0.5
         
-        # ===== CONFIDENCE THRESHOLDS =====
-        self.confidence_human_detection = 0.5
-        self.confidence_horse_detection = 0.5
-        self.confidence_human_pose = 0.5
-        self.confidence_horse_pose_superanimal = 0.5
-        self.confidence_horse_pose_vitpose = 0.5
+        # ===== POSE ESTIMATION CONFIGURATION =====
+        self.horse_pose_estimator = 'superanimal'  # superanimal, vitpose, both
+        self.confidence_horse_pose_superanimal = 0.3
+        self.confidence_horse_pose_vitpose = 0.3
         
-        # ===== BASIC SETTINGS =====
-        self.jockey_overlap_threshold = 0.4
+        # ===== TRACKING CONFIGURATION =====
+        self.tracker_type = 'deepocsort'
         
-        # ===== BOOSTTRACK CONFIGURATION =====
-        self.tracker_type = 'boosttrack'  # 'boosttrack' or 'bytetrack'
-        
-        # BoostTrack parameters
-        self.boosttrack_config = {
-            'max_age': 60,
-            'min_hits': 3,
-            'det_thresh': 0.6,
+        # Deep OC-SORT parameters
+        self.deepocsort_config = {
+            'max_age': 100,
+            'min_hits': 5,
+            'det_thresh': 0.65,
             'iou_threshold': 0.3,
-            'use_ecc': True,
-            'min_box_area': 10,
-            'aspect_ratio_thresh': 1.6,
-            'cmc_method': 'ecc',
-            'lambda_iou': 0.5,
-            'lambda_mhd': 0.25,
-            'lambda_shape': 0.25,
-            'use_dlo_boost': True,
-            'use_duo_boost': True,
-            'dlo_boost_coef': 0.65,
-            's_sim_corr': False,
-            'use_rich_s': False,
-            'use_sb': False,
-            'use_vt': False,
-            'with_reid': False
+            'per_class': False,
+            'delta_t': 3,
+            'inertia': 0.3,
+            'Q_xy_scaling': 0.01,
+            'Q_s_scaling': 0.0001,
+            'asso_func': 'iou',
+            'w_association_emb': 0.6,
+            'alpha_fixed_emb': 0.9,
+            'aw_param': 0.5,
+            'embedding_off': True,
+            'cmc_off': False,
+            'aw_off': False,
         }
         
-        # ===== SIGLIP CLASSIFICATION =====
-        self.enable_siglip_classification = True
-        self.reference_image_path = "horse_9.png"
-        self.max_horses = 9
-        self.max_jockeys = 9
-        self.siglip_confidence_threshold = 0.8
+        # ===== REID CONFIGURATION =====
+        self.enable_reid = True
+        self.reid_similarity_threshold = 0.3
+        self.reid_memory_size = 15
         
         # ===== PERFORMANCE TUNING =====
-        self.max_tracks_per_frame = 9
+        self.max_racers = 10
         
         # Load from file if provided
         if config_file:
             self.load_from_file(config_file)
     
     def load_from_file(self, config_file: str):
-        """Enhanced config loading that handles ANY setting from YAML"""
+        """Load configuration from YAML or JSON file"""
         config_path = Path(config_file)
         if not config_path.exists():
             print(f"⚠️ Config file '{config_file}' not found, using defaults")
@@ -114,164 +79,99 @@ class Config:
             
             # Load ALL values from config file
             loaded_settings = []
-            new_settings = []
             
             for key, value in config_data.items():
                 if hasattr(self, key):
                     setattr(self, key, value)
                     loaded_settings.append(key)
                 else:
+                    # Add new settings dynamically
                     setattr(self, key, value)
-                    new_settings.append(key)
+                    loaded_settings.append(f"{key} (new)")
             
             print(f"✅ Configuration loaded from {config_file}")
-            print(f"   📋 Loaded {len(loaded_settings)} existing settings")
+            print(f"   📋 Loaded {len(loaded_settings)} settings")
             
-            if new_settings:
-                print(f"   🆕 Added {len(new_settings)} new settings from YAML:")
-                for setting in new_settings:
-                    print(f"      - {setting}: {getattr(self, setting)}")
-            
-            # Show tracking method
-            tracker_type = getattr(self, 'tracker_type', 'bytetrack')
-            print(f"   🎯 Tracking Method: {tracker_type.upper()}")
-            
-            if tracker_type == 'boosttrack':
-                boosttrack_config = getattr(self, 'boosttrack_config', {})
-                print(f"   ⚡ BoostTrack Config: {len(boosttrack_config)} parameters")
-            
-            # Show SigLIP classification status
-            if getattr(self, 'enable_siglip_classification', False):
-                ref_image = getattr(self, 'reference_image_path', 'not set')
-                max_horses = getattr(self, 'max_horses', 9)
-                max_jockeys = getattr(self, 'max_jockeys', 9)
-                print(f"   🔍 SigLIP Classification: ENABLED")
-                print(f"   📷 Reference Image: {ref_image}")
-                print(f"   🐴 Max Horses: {max_horses}, Max Jockeys: {max_jockeys}")
-            else:
-                print(f"   🔍 SigLIP Classification: DISABLED")
+            # Show key configurations
+            print(f"   🐴 Roboflow Model: {getattr(self, 'roboflow_model_id', 'not set')}")
+            print(f"   🎯 Tracking Method: {self.tracker_type.upper()}")
+            print(f"   🦴 Pose Estimation: {self.horse_pose_estimator}")
+            print(f"   🔄 ReID: {'ENABLED' if self.enable_reid else 'DISABLED'}")
                 
         except Exception as e:
             print(f"❌ Error loading config file: {e}")
             import traceback
             traceback.print_exc()
     
-    def set_performance_mode(self, mode: str):
-        """Set performance mode: 'speed', 'balanced', or 'accuracy'"""
-        if mode == 'speed':
-            self.boosttrack_config.update({
-                'track_high_thresh': 0.7,
-                'track_low_thresh': 0.2,
-                'track_buffer': 20,
-                'match_thresh': 0.7
-            })
-            print("🚀 Performance mode: SPEED")
-            
-        elif mode == 'balanced':
-            self.boosttrack_config.update({
-                'track_high_thresh': 0.6,
-                'track_low_thresh': 0.1,
-                'track_buffer': 30,
-                'match_thresh': 0.8
-            })
-            print("⚖️ Performance mode: BALANCED")
-            
-        elif mode == 'accuracy':
-            self.boosttrack_config.update({
-                'track_high_thresh': 0.5,
-                'track_low_thresh': 0.05,
-                'track_buffer': 50,
-                'match_thresh': 0.9
-            })
-            print("🎯 Performance mode: ACCURACY")
-            
-        else:
-            print(f"❌ Invalid mode. Available: 'speed', 'balanced', 'accuracy'")
-    
     def print_config(self):
         """Print current configuration"""
         print("\n🔧 Current Configuration:")
-        print(f"   Human detector: {self.HUMAN_DETECTORS[self.human_detector]}")
-        print(f"   Horse detector: {self.HORSE_DETECTORS[self.horse_detector]}")
-        print(f"   Human pose: {self.HUMAN_POSE_ESTIMATORS[self.human_pose_estimator]}")
-        print(f"   Horse pose: {self.HORSE_POSE_ESTIMATORS[self.horse_pose_estimator]}")
+        print(f"   Roboflow Model: {getattr(self, 'roboflow_model_id', 'not set')}")
+        print(f"   Roboflow Confidence: {self.roboflow_confidence}")
+        print(f"   Pose Estimator: {self.horse_pose_estimator}")
+        print(f"   Pose Confidence (SuperAnimal): {self.confidence_horse_pose_superanimal}")
+        print(f"   Pose Confidence (ViTPose): {self.confidence_horse_pose_vitpose}")
+        print(f"   Tracker: {self.tracker_type.upper()}")
+        print(f"   ReID: {'ENABLED' if self.enable_reid else 'DISABLED'}")
         print(f"   Device: {self.device}")
         print(f"   Display: {self.display}")
-        
-        # Tracking status
-        tracker_type = getattr(self, 'tracker_type', 'bytetrack')
-        print(f"\n🎯 Tracking Method: {tracker_type.upper()}")
-        
-        if tracker_type == 'boosttrack':
-            print(f"   BoostTrack Settings:")
-            for key, value in self.boosttrack_config.items():
-                print(f"   - {key}: {value}")
-        
-        # SigLIP classification status
-        if getattr(self, 'enable_siglip_classification', False):
-            print(f"\n🔍 SigLIP Classification: ENABLED")
-            print(f"   Reference Image: {getattr(self, 'reference_image_path', 'not set')}")
-            print(f"   Max Horses: {getattr(self, 'max_horses', 9)}")
-            print(f"   Max Jockeys: {getattr(self, 'max_jockeys', 9)}")
-            print(f"   Confidence Threshold: {getattr(self, 'siglip_confidence_threshold', 0.3)}")
-        else:
-            print(f"\n🔍 SigLIP Classification: DISABLED")
+        if self.output_path:
+            print(f"   Output: {self.output_path}")
     
-    def create_template_config(self, filename: str = "boosttrack_config_template.yaml"):
-        """Create template config with BoostTrack settings"""
+    def create_template_config(self, filename: str = "racer_config_template.yaml"):
+        """Create template config for new racer detection system"""
         template = {
             '# Basic Settings': None,
-            'video_path': 'inputs/your_video.mp4',
+            'video_path': 'inputs/race_video.mp4',
             'output_path': None,
             'display': False,
             'device': 'cuda',
             'max_frames': None,
             
-            '# Model Selection': None,
-            'human_detector': 'rtdetr',
-            'horse_detector': 'rtdetr', 
-            'human_pose_estimator': 'vitpose',
-            'horse_pose_estimator': 'superanimal',
+            '# Roboflow Configuration': None,
+            'roboflow_api_key': 'your_roboflow_api_key_here',
+            'roboflow_model_id': 'your_model_id/version',
+            'roboflow_confidence': 0.5,
             
-            '# Confidence Thresholds': None,
-            'confidence_human_detection': 0.5,
-            'confidence_horse_detection': 0.5,
-            'confidence_human_pose': 0.5,
-            'confidence_horse_pose_superanimal': 0.5,
-            'confidence_horse_pose_vitpose': 0.5,
+            '# Pose Estimation': None,
+            'horse_pose_estimator': 'both',  # superanimal, vitpose, both
+            'confidence_horse_pose_superanimal': 0.3,
+            'confidence_horse_pose_vitpose': 0.3,
             
-            '# Tracking Method': None,
-            'tracker_type': 'boosttrack',
-            
-            '# BoostTrack Configuration': None,
-            'boosttrack_config': {
-                'track_high_thresh': 0.6,
-                'track_low_thresh': 0.1,
-                'new_track_thresh': 0.7,
-                'track_buffer': 30,
-                'match_thresh': 0.8,
-                'proximity_thresh': 0.5,
-                'appearance_thresh': 0.25,
-                'cmc_method': 'sparseOptFlow',
-                'frame_rate': 25,
-                'lambda_': 0.98
+            '# Tracking Configuration': None,
+            'tracker_type': 'deepocsort',
+            'deepocsort_config': {
+                'max_age': 100,
+                'min_hits': 5,
+                'det_thresh': 0.65,
+                'iou_threshold': 0.3,
+                'per_class': False,
+                'delta_t': 3,
+                'inertia': 0.3,
+                'Q_xy_scaling': 0.01,
+                'Q_s_scaling': 0.0001,
+                'asso_func': 'iou',
+                'w_association_emb': 0.6,
+                'alpha_fixed_emb': 0.9,
+                'aw_param': 0.5,
+                'embedding_off': True,
+                'cmc_off': False,
+                'aw_off': False,
             },
             
-            '# SigLIP Classification': None,
-            'enable_siglip_classification': True,
-            'reference_image_path': 'horse_9.png',
-            'max_horses': 9,
-            'max_jockeys': 9,
-            'siglip_confidence_threshold': 0.3,
+            '# ReID Configuration': None,
+            'enable_reid': True,
+            'reid_similarity_threshold': 0.3,
+            'reid_memory_size': 15,
             
             '# Performance': None,
-            'max_tracks_per_frame': 9
+            'max_racers': 10
         }
         
         try:
             with open(filename, 'w') as f:
-                f.write("# BoostTrack + SigLIP Configuration Template\n")
-                f.write("# Advanced tracking with individual horse/jockey identification\n\n")
+                f.write("# Simplified Racer Detection Configuration\n")
+                f.write("# Single Roboflow model detects horse+jockey as compound entity\n\n")
                 
                 for key, value in template.items():
                     if key.startswith('#'):
@@ -284,6 +184,6 @@ class Config:
                         else:
                             f.write(f"{key}: {value}\n")
                         
-            print(f"✅ BoostTrack template config created: {filename}")
+            print(f"✅ Template config created: {filename}")
         except Exception as e:
             print(f"❌ Error creating template: {e}")

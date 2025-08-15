@@ -13,15 +13,13 @@ dependencies:
   - mkl=2024.0
   
   - pip:
-    # PyTorch with CUDA support
-    - torch==2.7.1+cu126
-    - torchvision==0.22.1+cu126
     
     # HuggingFace Transformers ecosystem  
     - transformers==4.52.4
     - huggingface-hub
     - tokenizers
     - safetensors
+    - ultralytics==8.3  # YOLOv8 for detection
     
     # Computer Vision
     - opencv-python==4.11.0

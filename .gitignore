@@ -11,3 +11,6 @@ __pycache__
 clustered_ref_images
 labeled_horse_crops
 *.pkl
+MobileSAM
+*.pth
+

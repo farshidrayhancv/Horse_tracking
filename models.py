@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
 from pathlib import Path
+from typing import List, Dict, Optional, Any
 
 try:
     import supervision as sv
@@ -16,6 +17,7 @@ try:
 except ImportError:
     SUPERANIMAL_AVAILABLE = False
 
+# Simplified model classes - only what's needed for SuperAnimal
 class BasicBlock(nn.Module):
     expansion = 1
 
@@ -251,7 +253,7 @@ class HRNet(nn.Module):
 class SuperAnimalQuadruped:
     def __init__(self, device: str = "cpu", config=None):
         self.device = device
-        self.config = config  # 🔥 Store config reference for confidence thresholds
+        self.config = config
         self.detector_model = None
         self.pose_model = None
         self.setup_models()
@@ -261,7 +263,7 @@ class SuperAnimalQuadruped:
         models_dir = Path("./superanimal_models")
         models_dir.mkdir(exist_ok=True)
         
-        print("🔄 Setting up SuperAnimal-Quadruped models using DLClibrary...")
+        print("🔄 Setting up SuperAnimal-Quadruped models...")
         
         if not SUPERANIMAL_AVAILABLE:
             print("❌ DLClibrary not available - install with: pip install dlclibrary")
@@ -285,7 +287,7 @@ class SuperAnimalQuadruped:
                 if self.pose_model:
                     print("✅ SuperAnimal pose model ready")
             else:
-                print("❌ Model files not found after download")
+                print("❌ Model files not found")
                 
         except Exception as e:
             print(f"❌ Failed to setup SuperAnimal models: {e}")
@@ -344,7 +346,7 @@ class SuperAnimalQuadruped:
             model.eval()
             return model
         except Exception as e:
-            print(f"❌ Failed to build Real HRNet pose model: {e}")
+            print(f"❌ Failed to build pose model: {e}")
             return None
     
     def setup_keypoints(self):
@@ -371,6 +373,7 @@ class SuperAnimalQuadruped:
         ]
     
     def detect_quadrupeds(self, frame: np.ndarray, confidence: float = None):
+        """Detect quadrupeds (not used in simplified system but kept for compatibility)"""
         if not self.detector_model:
             return sv.Detections.empty() if sv else []
         
@@ -396,7 +399,7 @@ class SuperAnimalQuadruped:
             if sv and len(boxes) > 0:
                 return sv.Detections(
                     xyxy=boxes,
-                    confidence=actual_scores,  # ← Fixed: Use real scores instead of hardcoded 0.8
+                    confidence=actual_scores,
                     class_id=np.ones(len(boxes), dtype=int) * 17
                 )
             elif sv:
@@ -416,11 +419,8 @@ class SuperAnimalQuadruped:
         tensor = transform(frame_rgb).unsqueeze(0)
         return tensor.to(self.device)
     
-    def estimate_pose(self, frame: np.ndarray, detections):
-        """
-        🔥 ENHANCED: SuperAnimal pose estimation with focus on main subject per box.
-        Each detection box gets exactly one pose estimation focused on the primary subject.
-        """
+    def estimate_pose(self, frame: np.ndarray, detections) -> List[Dict[str, Any]]:
+        """Estimate pose on compound racer entities"""
         if not self.pose_model:
             return []
         
@@ -434,43 +434,24 @@ class SuperAnimalQuadruped:
             return []
         
         poses = []
-        # 🔥 Get confidence threshold from config
         conf_threshold = self.config.confidence_horse_pose_superanimal if self.config else 0.3
         
         try:
             for box_idx, box in enumerate(boxes):
                 x1, y1, x2, y2 = box.astype(int)
                 
-                # Safety checks for valid bounding box
+                # Safety checks
                 if x1 >= x2 or y1 >= y2:
                     continue
                 
-                # Ensure box is within frame bounds
+                # Ensure within frame bounds
                 frame_h, frame_w = frame.shape[:2]
                 x1 = max(0, min(x1, frame_w - 1))
                 y1 = max(0, min(y1, frame_h - 1))
                 x2 = max(x1 + 1, min(x2, frame_w))
                 y2 = max(y1 + 1, min(y2, frame_h))
                 
-                # 🔥 ENHANCED: Focus on center region for main subject
-                # Add small padding to focus on the main subject in the center
-                box_w, box_h = x2 - x1, y2 - y1
-                center_padding_x = int(box_w * 0.05)  # 5% padding
-                center_padding_y = int(box_h * 0.05)
-                
-                focused_x1 = max(x1, x1 + center_padding_x)
-                focused_y1 = max(y1, y1 + center_padding_y)
-                focused_x2 = min(x2, x2 - center_padding_x)
-                focused_y2 = min(y2, y2 - center_padding_y)
-                
-                # Use focused crop if it's large enough, otherwise use original
-                if focused_x2 - focused_x1 > 50 and focused_y2 - focused_y1 > 50:
-                    cropped = frame[focused_y1:focused_y2, focused_x1:focused_x2]
-                    crop_offset_x, crop_offset_y = focused_x1, focused_y1
-                else:
-                    cropped = frame[y1:y2, x1:x2]
-                    crop_offset_x, crop_offset_y = x1, y1
-                
+                cropped = frame[y1:y2, x1:x2]
                 if cropped.size == 0:
                     continue
                 
@@ -478,17 +459,17 @@ class SuperAnimalQuadruped:
                 if crop_h < 10 or crop_w < 10:
                     continue
                 
-                # Preprocess the CROPPED image
+                # Preprocess and run pose estimation
                 crop_tensor = self.preprocess_crop_pose(cropped)
                 
                 with torch.no_grad():
                     heatmaps = self.pose_model(crop_tensor)
                 
-                # Convert heatmaps to keypoints (with proper offset correction)
-                keypoints = self.heatmaps_to_keypoints_focused(heatmaps, crop_offset_x, crop_offset_y, crop_w, crop_h)
+                # Convert to keypoints
+                keypoints = self.heatmaps_to_keypoints_focused(heatmaps, x1, y1, crop_w, crop_h)
                 
                 if keypoints is not None:
-                    # 🔥 CRITICAL: Apply SOURCE-LEVEL confidence filtering
+                    # Apply confidence filtering
                     filtered_keypoints = []
                     valid_count = 0
                     total_confidence = 0.0
@@ -500,13 +481,12 @@ class SuperAnimalQuadruped:
                             valid_count += 1
                             total_confidence += confidence
                         else:
-                            filtered_keypoints.append([-1.0, -1.0, 0.0])  # Invalid keypoint marker
+                            filtered_keypoints.append([-1.0, -1.0, 0.0])
                     
-                    # Calculate average confidence only from valid keypoints
                     avg_confidence = total_confidence / valid_count if valid_count > 0 else 0.0
                     
-                    # Only accept poses with sufficient valid keypoints
-                    if valid_count >= 5:  # At least 5 valid keypoints for a meaningful pose
+                    # Only accept poses with sufficient keypoints
+                    if valid_count >= 5:
                         poses.append({
                             'keypoints': np.array(filtered_keypoints),
                             'box': box,
@@ -514,7 +494,6 @@ class SuperAnimalQuadruped:
                             'confidence': avg_confidence,
                             'box_index': box_idx
                         })
-                        # print(f"🔥 SuperAnimal Box {box_idx}: {valid_count}/39 keypoints above {conf_threshold}, avg_conf: {avg_confidence:.3f}")
             
             return poses
             
@@ -534,7 +513,7 @@ class SuperAnimalQuadruped:
         return tensor.to(self.device)
     
     def heatmaps_to_keypoints_focused(self, heatmaps, offset_x, offset_y, crop_w, crop_h):
-        """Convert heatmaps to keypoints with proper coordinate mapping and sigmoid normalization"""
+        """Convert heatmaps to keypoints with proper coordinate mapping"""
         try:
             if isinstance(heatmaps, tuple):
                 heatmaps = heatmaps[0]
@@ -561,11 +540,11 @@ class SuperAnimalQuadruped:
                 heatmap = heatmaps[i]
                 y_idx, x_idx = np.unravel_index(np.argmax(heatmap), heatmap.shape)
                 
-                # Map from heatmap coordinates to crop coordinates, then to original image coordinates
+                # Map coordinates
                 x_coord = offset_x + (x_idx / heatmap.shape[1]) * crop_w
                 y_coord = offset_y + (y_idx / heatmap.shape[0]) * crop_h
                 
-                # ← Fixed: Normalize confidence to 0-1 range using sigmoid
+                # Normalize confidence
                 raw_confidence = float(heatmap[y_idx, x_idx])
                 confidence = 1.0 / (1.0 + np.exp(-raw_confidence))
                 
@@ -575,8 +554,3 @@ class SuperAnimalQuadruped:
         except Exception as e:
             print(f"Error converting heatmaps: {e}")
             return None
-    
-    def heatmaps_to_keypoints(self, heatmaps, box):
-        """Legacy method - use heatmaps_to_keypoints_focused for new code"""
-        x1, y1, x2, y2 = box
-        return self.heatmaps_to_keypoints_focused(heatmaps, x1, y1, x2-x1, y2-y1)
