@@ -42,23 +42,54 @@ class SimplifiedPoseEstimationManager:
         if not sv or len(detections) == 0:
             return []
         
-        all_poses = []
+        if self.config.human_pose_estimator == 'vitpose':
+            poses = self._estimate_vitpose_human(frame, detections)
+            # Ensure one pose per box
+            return self._ensure_one_pose_per_box(poses, len(detections), "Human ViTPose")
+        else:
+            return []
+    
+    def estimate_horse_poses(self, frame: np.ndarray, detections):
+        """Horse pose estimation - ONE pose per detection box"""
+        if self.config.horse_pose_estimator == 'none':
+            return []
         
-        # Process each racer detection
-        for i, bbox in enumerate(detections.xyxy):
-            racer_poses = []
+        if not sv or len(detections) == 0:
+            return []
+        
+        if self.config.horse_pose_estimator == 'superanimal':
+            poses = self._estimate_superanimal_only(frame, detections)
+            return self._ensure_one_pose_per_box(poses, len(detections), "SuperAnimal")
+        elif self.config.horse_pose_estimator == 'vitpose':
+            poses = self._estimate_vitpose_horse_only(frame, detections)
+            return self._ensure_one_pose_per_box(poses, len(detections), "Horse ViTPose")
+        elif self.config.horse_pose_estimator == 'dual':
+            return self._estimate_dual_competition(frame, detections)
+        else:
+            return []
+    
+    def _ensure_one_pose_per_box(self, poses, num_boxes, method_name):
+        """
+        Ensure exactly one pose per detection box.
+        If multiple poses per box, select the best one.
+        If no pose for a box, that's OK (empty slot).
+        """
+        if not poses:
+            return []
+        
+        # Group poses by box index (assuming poses are in same order as detection boxes)
+        final_poses = []
+        
+        for box_idx in range(num_boxes):
+            # Get poses for this box (should be just one, but might be multiple or zero)
+            poses_for_this_box = [p for i, p in enumerate(poses) if i == box_idx]
             
-            # Run SuperAnimal if configured
-            if self.config.horse_pose_estimator in ['superanimal', 'both']:
-                superanimal_poses = self._estimate_superanimal_on_box(frame, bbox, i)
-                racer_poses.extend(superanimal_poses)
-            
-            # Run ViTPose if configured  
-            if self.config.horse_pose_estimator in ['vitpose', 'both']:
-                vitpose_poses = self._estimate_vitpose_on_box(frame, bbox, i)
-                racer_poses.extend(vitpose_poses)
-            
-            all_poses.extend(racer_poses)
+            if poses_for_this_box:
+                # Select best pose for this box
+                best_pose = self.select_best_pose_in_box(poses_for_this_box, method_name)
+                if best_pose:
+                    final_poses.append(best_pose)
+            # If no pose for this box, we skip it (don't add empty placeholder)
         
         return all_poses
     

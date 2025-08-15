@@ -299,7 +299,9 @@ class SimplifiedRacerTrackingSystem:
                 print(f"Frame {frame_count}: Got {len(racer_detections)} detections")
                 if len(racer_detections) > 0:
                     print(f"  Confidences: {racer_detections.confidence}")
-                    print(f"  Class IDs: {racer_detections.class_id if hasattr(racer_detections, 'class_id') else 'None'}")
+                    self.debug_logger.log_message(
+                        f"  Class IDs: {racer_detections.class_id if hasattr(racer_detections, 'class_id') else 'None'}"
+                    )
             
             # Log detections
             self.debug_logger.log_detections(sv.Detections.empty(), racer_detections, "Roboflow")

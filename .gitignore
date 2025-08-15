@@ -8,8 +8,7 @@ __pycache__
 *.pt
 *.pyc
 *.lock
-*.pth
-*.pt
-
-
-
+clustered_ref_images
+labeled_horse_crops
+*.pkl
+MobileSAM
