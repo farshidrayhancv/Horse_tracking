@@ -1,19 +1,27 @@
+#!/usr/bin/env python3
+"""
+Simplified Racer Tracking System
+Single Roboflow model detects horse+jockey compound entities
+Dual pose estimation (SuperAnimal + ViTPose) on same bounding box
+"""
+
 import cv2
 import numpy as np
 import torch
 import warnings
-import re
+import time
 from pathlib import Path
 
 # Local imports
 from config import Config
 from models import SuperAnimalQuadruped
-from detectors import DetectionManager
-from pose_estimators import PoseEstimationManager
-from visualizers import Visualizer
-from reid_pipeline import ReIDPipeline
+from detectors import RacerDetectionManager
+from pose_estimators import SimplifiedPoseEstimationManager
+from visualizers import SimplifiedVisualizer
+from reid_pipeline import SimplifiedReIDPipeline
+from debug_logger import TrackingDebugLogger
 
-# Suppress warnings but keep errors and status prints
+# Suppress warnings
 warnings.filterwarnings("ignore")
 
 # Check dependencies
@@ -25,36 +33,29 @@ except ImportError:
     print("Install tqdm for progress bars: pip install tqdm")
 
 try:
-    from transformers import AutoProcessor, VitPoseForPoseEstimation, RTDetrForObjectDetection
-    VITPOSE_AVAILABLE = True
-    print("✓ Official ViTPose (HuggingFace Transformers) available")
-except ImportError:
-    VITPOSE_AVAILABLE = False
-    print("⚠️ ViTPose not available - install with: pip install transformers torch")
-
-try:
-    from dlclibrary import download_huggingface_model
-    SUPERANIMAL_AVAILABLE = True
-    print("✓ Official DLClibrary + SuperAnimal available")
-except ImportError:
-    SUPERANIMAL_AVAILABLE = False
-    print("⚠️ DLClibrary not available - install with: pip install dlclibrary")
-
-try:
     import supervision as sv
-    from supervision import ByteTrack
-    print("✓ Supervision 0.25.1 with ByteTrack for professional tracking")
+    print("✓ Supervision available")
 except ImportError:
     print("❌ Supervision not available - install with: pip install supervision")
     sv = None
 
-class HybridPoseSystem:
+try:
+    from boxmot import DeepOcSort
+    DEEPOCSORT_AVAILABLE = True
+    print("✓ DeepOcSort available")
+except ImportError:
+    DEEPOCSORT_AVAILABLE = False
+    print("⚠️ BoxMOT trackers not available - install with: pip install boxmot")
+
+
+class SimplifiedRacerTrackingSystem:
     def __init__(self, video_path: str, config: Config):
         self.video_path = Path(video_path)
         self.config = config
         
-        # Parse expected counts from filename
-        self.expected_horses, self.expected_jockeys = self.parse_filename_counts()
+        # Initialize debug logger
+        self.debug_logger = TrackingDebugLogger(self.config)
+        self.debug_logger.set_video_name(str(self.video_path))
         
         # Setup video
         self.cap = cv2.VideoCapture(str(self.video_path))
@@ -67,176 +68,185 @@ class HybridPoseSystem:
         self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 25
         
         if self.total_frames <= 0:
-            print("⚠️ Warning: Frame count not available, will process until end of video")
+            print("⚠️ Warning: Frame count not available")
             self.total_frames = float('inf')
         
         # Setup tracking
-        self.setup_trackers()
+        self.setup_tracker()
         
-        # Setup models and components
+        # Setup components
         self.setup_models()
-        
-        # Setup re-identification pipeline
-        self.reid_pipeline = None
-        if self.config.enable_reid_pipeline:
-            try:
-                self.reid_pipeline = ReIDPipeline(self.config)
-                print("✅ Re-identification pipeline initialized")
-            except Exception as e:
-                print(f"❌ Re-identification pipeline failed to initialize: {e}")
-                print("🔄 Continuing without re-identification")
-                self.config.enable_reid_pipeline = False
         
         # Print configuration
         self.config.print_config()
-        print(f"🎯 Expected: {self.expected_horses} horses, {self.expected_jockeys} jockeys")
-        print(f"🐴🏇 Configurable Pose System with RGB-D Re-ID ready: {self.total_frames} frames @ {self.fps} FPS")
+        print(f"🏇 Simplified Racer Tracking System ready")
+        print(f"📊 {self.total_frames} frames @ {self.fps} FPS")
+        print(f"🎯 Strategy: Roboflow compound detection + dual pose overlay")
     
-    def parse_filename_counts(self):
-        """Parse filename to extract expected horse/jockey counts"""
-        filename = self.video_path.stem
-        
-        # Look for pattern like horse_11, horse_22, etc.
-        match = re.search(r'horse_(\d+)', filename, re.IGNORECASE)
-        if match:
-            count = int(match.group(1))
-            return count, count  # Same number of horses and jockeys
-        
-        # Default fallback
-        print(f"⚠️ Could not parse count from filename '{filename}', using defaults")
-        return 10, 10  # Default to 10 horses, 10 jockeys
-    
-    def setup_trackers(self):
-        """Initialize ByteTracks for horses and humans"""
+    def setup_tracker(self):
+        """Initialize Deep OC-SORT tracker for compound racers"""
         if not sv:
-            print("❌ Tracking disabled - supervision not available")
-            self.horse_tracker = None
-            self.human_tracker = None
-            return
+            raise RuntimeError("❌ Supervision not available")
         
-        # Initialize trackers with video FPS
-        self.horse_tracker = ByteTrack(frame_rate=int(self.fps))
-        self.human_tracker = ByteTrack(frame_rate=int(self.fps))
+        if not DEEPOCSORT_AVAILABLE:
+            raise RuntimeError("❌ DeepOCSORT not available")
         
-        print(f"✅ ByteTracks initialized @ {self.fps} FPS")
+        try:
+            deepocsort_config = getattr(self.config, 'deepocsort_config', {})
+            
+            # Quality defaults for compound entities
+            quality_defaults = {
+                'max_age': 100,
+                'min_hits': 5,
+                'det_thresh': 0.65,
+                'iou_threshold': 0.3,
+                'per_class': False,
+                'delta_t': 3,
+                'inertia': 0.3,
+                'Q_xy_scaling': 0.01,
+                'Q_s_scaling': 0.0001,
+                'asso_func': 'iou',
+                'w_association_emb': 0.6,
+                'alpha_fixed_emb': 0.9,
+                'aw_param': 0.5,
+                'embedding_off': True,
+                'cmc_off': False,
+                'aw_off': False,
+            }
+            
+            final_config = {**quality_defaults, **deepocsort_config}
+            
+            # Type validation
+            typed_config = {}
+            for key, value in final_config.items():
+                try:
+                    if key in ['max_age', 'min_hits', 'delta_t']:
+                        typed_config[key] = int(value)
+                    elif key in ['det_thresh', 'iou_threshold', 'inertia', 'w_association_emb', 
+                               'alpha_fixed_emb', 'aw_param', 'Q_xy_scaling', 'Q_s_scaling']:
+                        typed_config[key] = float(value)
+                    elif key in ['per_class', 'embedding_off', 'cmc_off', 'aw_off']:
+                        typed_config[key] = bool(value)
+                    elif key in ['asso_func']:
+                        typed_config[key] = str(value)
+                    else:
+                        typed_config[key] = value
+                except (ValueError, TypeError):
+                    typed_config[key] = quality_defaults.get(key, value)
+            
+            device_id = 0 if self.config.device == 'cuda' else 'cpu'
+            reid_weights_path = Path('osnet_x0_25_msmt17.pt')
+            
+            self.racer_tracker = DeepOcSort(
+                reid_weights=reid_weights_path,
+                device=device_id,
+                half=True,
+                **typed_config
+            )
+            
+            print(f"✅ Deep OC-SORT initialized for compound racers")
+            
+        except Exception as e:
+            print(f"❌ Deep OC-SORT initialization failed: {e}")
+            raise RuntimeError(f"Failed to initialize tracker: {e}")
     
     def setup_models(self):
-        # Setup SuperAnimal model if needed - 🔥 PASS CONFIG
+        """Setup all system components"""
+        # SuperAnimal model for pose estimation
         self.superanimal = None
-        if self.config.horse_detector in ['superanimal', 'both'] or self.config.horse_pose_estimator in ['superanimal', 'dual']:
-            self.superanimal = SuperAnimalQuadruped(device=self.config.device, config=self.config)  # 🔥 Pass config
+        if self.config.horse_pose_estimator in ['superanimal', 'both']:
+            self.superanimal = SuperAnimalQuadruped(device=self.config.device, config=self.config)
         
-        # Setup detection manager
-        self.detection_manager = DetectionManager(self.config, self.superanimal)
+        # Roboflow detection manager
+        self.detection_manager = RacerDetectionManager(self.config)
         
-        # Setup pose estimation manager
-        self.pose_manager = PoseEstimationManager(self.config, self.superanimal)
+        # Pose estimation manager
+        self.pose_manager = SimplifiedPoseEstimationManager(self.config, self.superanimal)
         
-        # Setup visualizer
-        self.visualizer = Visualizer(self.config, self.superanimal)
+        # Visualizer
+        self.visualizer = SimplifiedVisualizer(self.config, self.superanimal)
+        
+        # ReID pipeline (optional)
+        self.reid_pipeline = None
+        if getattr(self.config, 'enable_reid', False):
+            self.reid_pipeline = SimplifiedReIDPipeline(self.config)
+        else:
+            print("🔄 ReID: DISABLED")
     
-    def limit_detections(self, detections, max_count, detection_type="object"):
-        """Limit detections to expected count, keeping highest confidence ones"""
-        if not sv or len(detections) == 0:
+    def limit_detections(self, detections, max_count):
+        """Limit detections to top-quality ones"""
+        if not sv or len(detections) == 0 or len(detections) <= max_count:
             return detections
         
-        if len(detections) <= max_count:
-            return detections
-        
-        # Sort by confidence (descending) and take top N
+        # Sort by confidence and take top N
         sorted_indices = np.argsort(detections.confidence)[::-1]
         top_indices = sorted_indices[:max_count]
         
         limited_detections = sv.Detections(
             xyxy=detections.xyxy[top_indices],
             confidence=detections.confidence[top_indices],
-            class_id=detections.class_id[top_indices]
+            class_id=detections.class_id[top_indices] if hasattr(detections, 'class_id') and detections.class_id is not None else None
         )
         
+        # Copy mask data if available
+        if hasattr(detections, 'mask') and detections.mask is not None:
+            limited_detections.mask = detections.mask[top_indices]
+        
+        print(f"🎯 Limited to {max_count} best racers from {len(detections)} detections")
         return limited_detections
     
-    def visualize_segmentation_masks(self, segmentation_masks, tracked_horses, frame_shape):
-        """Create visualization showing only segmentation masks on blank background"""
-        # Create blank canvas (black background)
-        mask_canvas = np.zeros((frame_shape[0], frame_shape[1], 3), dtype=np.uint8)
+    def update_tracker(self, tracker, detections, frame):
+        """Update Deep OC-SORT with error handling"""
+        if not sv or len(detections) == 0:
+            return sv.Detections.empty()
         
-        if segmentation_masks and len(segmentation_masks) > 0:
+        try:
+            xyxy = np.array(detections.xyxy, dtype=np.float64)
+            confidence = np.array([float(x) for x in detections.confidence], dtype=np.float64)
             
-            # Draw each horse mask with unique colors
-            for i, mask in enumerate(segmentation_masks):
-                if mask is not None:
-                    
-                    # Get track-based color - ensure we have a valid color
-                    if sv and len(tracked_horses) > 0 and i < len(tracked_horses.xyxy):
-                        track_id = tracked_horses.tracker_id[i] if hasattr(tracked_horses, 'tracker_id') and i < len(tracked_horses.tracker_id) else i
-                        color = self.visualizer.get_track_color(track_id)
-                    else:
-                        # Fallback colors
-                        colors = [(0, 255, 0), (255, 0, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255), (0, 255, 255)]
-                        color = colors[i % len(colors)]
-                    
-                    # Fill mask area with color
-                    mask_canvas[mask] = color
-                    
-                    # Add white contour outline for better visibility
-                    mask_area = mask.astype(np.uint8) * 255
-                    contours, _ = cv2.findContours(mask_area, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    cv2.drawContours(mask_canvas, contours, -1, (255, 255, 255), 2)
-        else:
-            # print("Debug: No segmentation masks to display")
-            pass
-        
-        return mask_canvas
-
-    def visualize_depth_with_masks(self, depth_map, segmentation_masks, tracked_horses):
-        """Create depth visualization with highlighted horse segmentation masks"""
-        # Convert depth to color map
-        depth_colored = cv2.applyColorMap(depth_map, cv2.COLORMAP_JET)
-        
-        if segmentation_masks and sv and len(tracked_horses) > 0:
-            # Overlay each horse mask with unique colors
-            for i, (mask, box) in enumerate(zip(segmentation_masks, tracked_horses.xyxy)):
-                if mask is not None:
-                    # Get track-based color
-                    track_id = tracked_horses.tracker_id[i] if hasattr(tracked_horses, 'tracker_id') and i < len(tracked_horses.tracker_id) else i
-                    color = self.visualizer.get_track_color(track_id)
-                    
-                    # Create colored mask overlay
-                    colored_mask = np.zeros_like(depth_colored)
-                    colored_mask[mask] = color
-                    
-                    # Blend with depth map
-                    mask_area = mask.astype(np.uint8) * 255
-                    depth_colored = cv2.addWeighted(depth_colored, 0.7, colored_mask, 0.3, 0)
-                    
-                    # Add contour outline
-                    contours, _ = cv2.findContours(mask_area, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    cv2.drawContours(depth_colored, contours, -1, color, 2)
-        
-        return depth_colored
-
-    def associate_poses_with_tracks(self, poses, tracked_detections):
-        """Associate pose results with tracked detection IDs"""
-        if not sv or not poses or len(tracked_detections) == 0:
-            return poses
-        
-        # Add track IDs to pose results
-        for i, pose in enumerate(poses):
-            if i < len(tracked_detections.tracker_id):
-                pose['track_id'] = tracked_detections.tracker_id[i]
+            if hasattr(detections, 'class_id') and detections.class_id is not None:
+                class_ids = np.array([float(x) for x in detections.class_id], dtype=np.float64)
             else:
-                pose['track_id'] = -1  # Untracked
-        
-        return poses
+                class_ids = np.zeros(len(detections), dtype=np.float64)
+            
+            dets_np = np.column_stack((xyxy, confidence, class_ids)).astype(np.float64)
+            
+            tracks = tracker.update(dets_np, frame)
+            
+            if tracks is None or len(tracks) == 0:
+                return sv.Detections.empty()
+            
+            tracked_detections = sv.Detections(
+                xyxy=tracks[:, :4],
+                confidence=tracks[:, 5] if tracks.shape[1] > 5 else confidence[:len(tracks)],
+                class_id=tracks[:, 6].astype(np.int32) if tracks.shape[1] > 6 else class_ids[:len(tracks)].astype(np.int32),
+                tracker_id=tracks[:, 4].astype(np.int32)
+            )
+            
+            # Copy mask data if available
+            if hasattr(detections, 'mask') and detections.mask is not None:
+                tracked_detections.mask = detections.mask[:len(tracked_detections)]
+            
+            return tracked_detections
+            
+        except Exception as e:
+            print(f"🔧 Tracker error: {str(e)[:50]}...")
+            # Fallback with dummy track IDs
+            return sv.Detections(
+                xyxy=detections.xyxy,
+                confidence=detections.confidence,
+                class_id=detections.class_id if hasattr(detections, 'class_id') else None,
+                tracker_id=np.arange(len(detections)) + 1000
+            )
     
     def process_video(self):
+        """Process video with simplified racer tracking pipeline"""
         # Determine output path
         if self.config.output_path:
             output_path = self.config.output_path
         else:
-            # Create safe output filename
-            input_stem = self.video_path.stem if self.video_path.suffix else self.video_path.name
-            output_path = str(self.video_path.parent / f"{input_stem}_rgb_d_reid_tracked_output.mp4")
+            input_stem = self.video_path.stem
+            output_path = str(self.video_path.parent / f"{input_stem}_racer_output.mp4")
         
         print(f"🎬 Processing: {self.video_path}")
         print(f"📤 Output: {output_path}")
@@ -250,250 +260,223 @@ class HybridPoseSystem:
         paused = False
         
         stats = {
-            'humans_detected': 0, 'horses_detected': 0,
-            'human_poses': 0, 'horse_poses': 0,
-            'superanimal_wins': 0, 'vitpose_wins': 0,
-            'tracked_horses': 0, 'tracked_humans': 0,
-            'active_horse_tracks': set(), 'active_human_tracks': set(),
-            'reid_reassignments': 0
+            'racers_detected': 0,
+            'total_poses': 0,
+            'superanimal_poses': 0,
+            'vitpose_poses': 0,
+            'tracked_racers': 0,
+            'active_tracks': set()
         }
         
-        # Initialize progress bar (only if not displaying)
+        # Initialize progress bar
         if TQDM_AVAILABLE and not self.config.display and self.total_frames != float('inf'):
-            pbar = tqdm(total=max_frames, desc="Processing with RGB-D Re-ID pipeline", 
+            pbar = tqdm(total=max_frames, desc="Processing Simplified Racer Tracking", 
                        bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}')
         else:
             pbar = None
         
         # Setup display window
         if self.config.display:
-            window_name = "Horse Racing System with RGB-D Re-Identification"
+            window_name = "Simplified Racer Tracking System"
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
             display_width = min(1200, self.width)
             display_height = int(self.height * (display_width / self.width))
             cv2.resizeWindow(window_name, display_width, display_height)
-        
+
         while frame_count < max_frames:
             ret, frame = self.cap.read()
             if not ret:
                 break
             
-            # 🔥 STEP 1: Detect objects based on config
-            human_detections = self.detection_manager.detect_humans(frame)
-            horse_detections = self.detection_manager.detect_horses(frame)
+            frame_start_time = time.time()
+            self.debug_logger.log_frame_start(frame_count, frame.shape)
             
-            # 🔥 STEP 2: Limit detections to expected counts
-            human_detections = self.limit_detections(human_detections, self.expected_jockeys, "jockeys")
-            horse_detections = self.limit_detections(horse_detections, self.expected_horses, "horses")
+            # STEP 1: Detect compound racers using Roboflow
+            racer_detections = self.detection_manager.detect_racers(frame)
             
-            # 🔥 STEP 3: Track detections
-            if sv and self.horse_tracker and self.human_tracker:
-                tracked_horses = self.horse_tracker.update_with_detections(horse_detections)
-                tracked_humans = self.human_tracker.update_with_detections(human_detections)
-                
-                # Update tracking stats
-                if len(tracked_horses) > 0:
-                    stats['active_horse_tracks'].update(tracked_horses.tracker_id)
-                if len(tracked_humans) > 0:
-                    stats['active_human_tracks'].update(tracked_humans.tracker_id)
-            else:
-                tracked_horses = horse_detections
-                tracked_humans = human_detections
+            # Debug: Print detection info
+            if frame_count < 5:  # Only for first few frames
+                print(f"Frame {frame_count}: Got {len(racer_detections)} detections")
+                if len(racer_detections) > 0:
+                    print(f"  Confidences: {racer_detections.confidence}")
+                    print(f"  Class IDs: {racer_detections.class_id if hasattr(racer_detections, 'class_id') else 'None'}")
             
-            # Filter humans to jockeys only (using tracked detections)
-            if sv:
-                jockey_detections = self.detection_manager.filter_jockeys(tracked_humans, tracked_horses)
-            else:
-                jockey_detections = tracked_humans
+            # Log detections
+            self.debug_logger.log_detections(sv.Detections.empty(), racer_detections, "Roboflow")
             
-
-            # 🔥 STEP 4: Apply Enhanced RGB-D Re-identification Pipeline
-            depth_map = None
-            if self.reid_pipeline and self.config.enable_reid_pipeline:
-                # Process horses with RGB-D re-identification
-                horse_rgb_crops, horse_depth_crops, depth_map, horse_reid_features, horse_depth_stats = self.reid_pipeline.process_frame(frame, tracked_horses)
-                tracked_horses_enhanced = self.reid_pipeline.enhance_tracking(
-                    tracked_horses, 
-                    horse_reid_features, 
-                    horse_depth_stats,
-                    expected_count=self.expected_horses  # Pass expected horse count
-                )
-                
-                # Process jockeys with RGB-D re-identification  
-                jockey_rgb_crops, jockey_depth_crops, _, jockey_reid_features, jockey_depth_stats = self.reid_pipeline.process_frame(frame, jockey_detections)
-                jockey_detections_enhanced = self.reid_pipeline.enhance_tracking(
-                    jockey_detections, 
-                    jockey_reid_features, 
-                    jockey_depth_stats,
-                    expected_count=self.expected_jockeys  # Pass expected jockey count
-                )
-                
-                # Get current reassignment count
-                stats['reid_reassignments'] = self.reid_pipeline.get_reassignment_count()
-                
-                # Update detections with enhanced tracking
-                tracked_horses = tracked_horses_enhanced
-                jockey_detections = jockey_detections_enhanced
+            # STEP 2: Limit to maximum expected racers
+            max_racers = getattr(self.config, 'max_racers', 10)
+            racer_detections = self.limit_detections(racer_detections, max_racers)
             
-            stats['humans_detected'] += len(jockey_detections) if sv else len(jockey_detections)
-            stats['horses_detected'] += len(tracked_horses) if sv else len(tracked_horses)
-            stats['tracked_horses'] = len(stats['active_horse_tracks'])
-            stats['tracked_humans'] = len(stats['active_human_tracks'])
+            # STEP 3: Track compound racers
+            tracked_racers = self.update_tracker(self.racer_tracker, racer_detections, frame)
             
-            # 🔥 STEP 5: Estimate poses based on config
-            human_poses = self.pose_manager.estimate_human_poses(frame, jockey_detections)
-            horse_poses = self.pose_manager.estimate_horse_poses(frame, tracked_horses)
+            # Log tracking
+            self.debug_logger.log_tracking_update(sv.Detections.empty(), tracked_racers, "DeepOCSORT")
             
-            # 🔥 STEP 6: Associate poses with track IDs
-            human_poses = self.associate_poses_with_tracks(human_poses, jockey_detections)
-            horse_poses = self.associate_poses_with_tracks(horse_poses, tracked_horses)
+            # Update stats - Fix the counting issue
+            current_racers = len(tracked_racers) if sv and hasattr(tracked_racers, '__len__') else 0
+            if hasattr(tracked_racers, 'tracker_id') and tracked_racers.tracker_id is not None:
+                stats['active_tracks'].update(tracked_racers.tracker_id[tracked_racers.tracker_id >= 0])
             
-            stats['human_poses'] += len(human_poses)
-            stats['horse_poses'] += len(horse_poses)
+            stats['racers_detected'] += current_racers
+            stats['tracked_racers'] = len(stats['active_tracks'])
             
-            # Count method wins for dual mode
-            if self.config.horse_pose_estimator == 'dual':
-                superanimal_count = sum(1 for pose in horse_poses if pose.get('method') == 'SuperAnimal')
-                vitpose_count = sum(1 for pose in horse_poses if pose.get('method') == 'ViTPose')
-                stats['superanimal_wins'] += superanimal_count
-                stats['vitpose_wins'] += vitpose_count
+            # STEP 4: Apply ReID enhancement (optional)
+            reid_info = {}
+            if self.reid_pipeline:
+                # Get masks for ReID
+                masks = self.detection_manager.get_masks(tracked_racers)
+                tracked_racers = self.reid_pipeline.enhance_tracking(tracked_racers, masks, frame)
+                reid_info = self.reid_pipeline.get_tracking_info()
             
-            # 🔥 STEP 7: Visualize everything with tracking and RGB-D re-ID
-            frame = self.visualizer.annotate_detections_with_tracking(frame, jockey_detections, tracked_horses)
+            # STEP 5: Estimate poses on compound entities
+            all_poses = self.pose_manager.estimate_poses_on_racers(frame, tracked_racers)
             
-            # Draw poses with track IDs
-            for pose_result in human_poses:
-                frame = self.visualizer.draw_human_pose_with_tracking(frame, pose_result)
+            # Filter poses by confidence
+            filtered_poses = self.pose_manager.filter_poses_by_confidence(all_poses)
             
-            for pose_result in horse_poses:
-                frame = self.visualizer.draw_horse_pose_with_tracking(frame, pose_result)
+            # Get pose statistics
+            pose_stats = self.pose_manager.get_pose_statistics(filtered_poses)
+            stats['total_poses'] += pose_stats['total_poses']
+            stats['superanimal_poses'] += pose_stats['superanimal_count']
+            stats['vitpose_poses'] += pose_stats['vitpose_count']
             
-            # Add pose method labels
-            frame = self.visualizer.draw_pose_labels(frame, horse_poses)
+            # Log poses
+            self.debug_logger.log_pose_estimation([], filtered_poses)
             
-            # Add enhanced depth and segmentation visualization
-            if self.reid_pipeline and self.config.enable_reid_pipeline and depth_map is not None:
-                # Get segmentation masks for visualization
-                segmentation_masks = self.reid_pipeline.get_current_masks()
-                
-                # Create depth visualization with highlighted horse masks (top right)
-                depth_with_masks = self.visualize_depth_with_masks(depth_map, segmentation_masks, tracked_horses)
-                depth_display = cv2.resize(depth_with_masks, (300, 200))
-                frame[10:210, self.width-310:self.width-10] = depth_display
-                cv2.putText(frame, "Depth + Horse Masks", (self.width-300, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
-                cv2.putText(frame, f"Reassign: {stats['reid_reassignments']}", (self.width-300, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255,255,255), 1)
-                
-                # Create segmentation masks only visualization (bottom left)
-                masks_only = self.visualize_segmentation_masks(segmentation_masks, tracked_horses, frame.shape)
-                masks_display = cv2.resize(masks_only, (300, 200))
-                frame[self.height-210:self.height-10, 10:310] = masks_display
-                cv2.putText(frame, "Segmentation Masks", (20, self.height-220), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+            # STEP 6: Visualize everything
+            # Annotate racer detections
+            frame = self.visualizer.annotate_racer_detections(frame, tracked_racers)
             
-            # Add info overlay with tracking and RGB-D re-ID stats
-            human_count = len(jockey_detections) if sv else len(jockey_detections)
-            horse_count = len(tracked_horses) if sv else len(tracked_horses)
+            # Draw compound poses (both SuperAnimal and ViTPose)
+            frame = self.visualizer.draw_compound_poses(frame, filtered_poses)
             
-            frame = self.visualizer.draw_info_overlay_with_tracking(
-                frame, frame_count, max_frames, human_count, horse_count,
-                len(human_poses), len(horse_poses), stats, self.expected_horses, self.expected_jockeys
+            # Draw pose information labels
+            frame = self.visualizer.draw_pose_info_labels(frame, filtered_poses)
+            
+            # Draw info overlay
+            frame = self.visualizer.draw_info_overlay(
+                frame, frame_count, max_frames, len(tracked_racers), 
+                pose_stats, reid_info
             )
             
-            # Write frame to output video
+            # Write frame to output
             out.write(frame)
             
-            # Display frame if requested
+            # Display if requested
             if self.config.display:
                 cv2.imshow(window_name, frame)
                 
-                # Handle key presses
                 key = cv2.waitKey(1 if not paused else 0) & 0xFF
                 
                 if key == ord('q') or key == 27:  # Q or ESC
-                    print("\n🛑 User requested quit")
+                    print("\n🛑 User quit")
                     break
                 elif key == ord(' '):  # SPACE
                     paused = not paused
                     print(f"{'⏸️ Paused' if paused else '▶️ Resumed'}")
-                elif paused and key != 255:  # Any other key when paused
-                    pass  # Continue to next frame
             
             frame_count += 1
             
-            # Update progress bar (only if available)
+            # Log frame end
+            frame_end_time = time.time()
+            self.debug_logger.log_frame_end(frame_end_time - frame_start_time)
+            
+            # Update progress bar
             if pbar:
-                reid_status = f"RGB-D:ON({stats['reid_reassignments']})" if self.config.enable_reid_pipeline else "Re-ID:OFF"
-                pbar.set_postfix_str(f"H:{human_count}/{self.expected_jockeys} Ho:{horse_count}/{self.expected_horses} T:H{stats['tracked_humans']}+Ho{stats['tracked_horses']} {reid_status}")
+                racer_count = len(tracked_racers) if hasattr(tracked_racers, '__len__') else 0
+                pose_count = pose_stats.get('total_poses', 0)
+                reid_status = f"ReID:{reid_info.get('total_reassignments', 0)}" if self.reid_pipeline else "ReID:OFF"
+                pbar.set_postfix_str(f"Racers:{racer_count}/{max_racers} Poses:{pose_count} {reid_status}")
                 pbar.update(1)
         
+        # Cleanup
         self.cap.release()
         out.release()
-        
         if self.config.display:
             cv2.destroyAllWindows()
-        
         if pbar:
             pbar.close()
         
-        print(f"✅ Processing complete!")
+        # Save debug logs
+        print(f"📊 Saving debug logs...")
+        self.debug_logger.save_logs(output_path)
+        
+        # Print final statistics
+        print(f"✅ Simplified racer tracking complete!")
         print(f"📊 Final Stats:")
-        print(f"   Expected: {self.expected_horses} horses, {self.expected_jockeys} jockeys")
-        print(f"   Humans detected: {stats['humans_detected']}")
-        print(f"   Horses detected: {stats['horses_detected']}")
-        print(f"   Human poses: {stats['human_poses']}")
-        print(f"   Horse poses: {stats['horse_poses']}")
-        print(f"   🔄 Unique tracks: {stats['tracked_humans']} humans, {stats['tracked_horses']} horses")
+        print(f"   Racers detected: {stats['racers_detected']}")
+        print(f"   Unique tracks: {stats['tracked_racers']}")
+        print(f"   Total poses: {stats['total_poses']}")
+        print(f"   - SuperAnimal: {stats['superanimal_poses']} (39kp)")
+        print(f"   - ViTPose: {stats['vitpose_poses']} (17kp)")
         
-        if self.config.enable_reid_pipeline:
-            print(f"🔍 RGB-D Re-identification enabled:")
-            print(f"   - Track reassignments: {stats['reid_reassignments']}")
-            print(f"   - Features: RGB (70%) + Depth shape (30%)")
-            print(f"   - Components: Depth-Anything → MobileSAM → MegaDescriptor")
-        
-        if self.config.horse_pose_estimator == 'dual':
-            print(f"🥊 Competition Results:")
-            print(f"   SuperAnimal wins: {stats['superanimal_wins']} (39 keypoints)")
-            print(f"   ViTPose wins: {stats['vitpose_wins']} (17 keypoints)")
+        if self.reid_pipeline:
+            reid_info = self.reid_pipeline.get_tracking_info()
+            print(f"🔄 ReID Performance:")
+            print(f"   Total reassignments: {reid_info['total_reassignments']}")
+            print(f"   Memory tracks: {len(reid_info['memory_tracks'])}")
         
         print(f"🎯 Output: {output_path}")
         
         return output_path
+
 
 def main():
     import sys
     
     if len(sys.argv) != 2:
         print("Usage: python main.py config.yaml")
+        print("\n🏇 Simplified Racer Tracking System")
+        print("Features:")
+        print("- Single Roboflow API for compound racer detection")
+        print("- Built-in segmentation masks")
+        print("- Dual pose estimation (SuperAnimal + ViTPose)")
+        print("- Deep OC-SORT tracking for compound entities")
+        print("- Optional MegaDescriptor ReID")
+        print("\nRequirements:")
+        print("- Roboflow API key and model ID")
+        print("- pip install inference supervision transformers torch boxmot")
         sys.exit(1)
     
-    # Load config from file
+    # Load configuration
     config_file = sys.argv[1]
     config = Config(config_file)
     
-    # Debug: print what was loaded
-    print(f"Debug: video_path = {getattr(config, 'video_path', 'NOT FOUND')}")
-    
-    # Get video path from config
+    # Validate required settings
     video_path = getattr(config, 'video_path', None)
     if not video_path:
-        print("❌ Error: Config file must specify 'video_path'")
-        print("Available config attributes:", [attr for attr in dir(config) if not attr.startswith('_')])
+        print("❌ Error: video_path must be specified in config")
         sys.exit(1)
     
-    # Auto-detect device if not specified
-    if config.device == "cpu" and VITPOSE_AVAILABLE and torch.cuda.is_available():
-        config.device = "cuda"
+    if not hasattr(config, 'roboflow_api_key') or not config.roboflow_api_key:
+        print("❌ Error: roboflow_api_key must be specified in config")
+        sys.exit(1)
     
-    # Check if video file exists
+    if not hasattr(config, 'roboflow_model_id') or not config.roboflow_model_id:
+        print("❌ Error: roboflow_model_id must be specified in config")
+        sys.exit(1)
+    
+    # Auto-detect device
+    if config.device == "cpu" and torch.cuda.is_available():
+        config.device = "cuda"
+        print("🔧 Auto-detected CUDA device")
+    
+    # Check video file
     video_file = Path(video_path)
     if not video_file.exists():
         print(f"❌ Error: Video file '{video_path}' does not exist")
         sys.exit(1)
     
     try:
-        system = HybridPoseSystem(video_path, config)
+        system = SimplifiedRacerTrackingSystem(video_path, config)
         system.process_video()
     except Exception as e:
         print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
 
 if __name__ == "__main__":
     main()

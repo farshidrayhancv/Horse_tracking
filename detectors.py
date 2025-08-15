@@ -1,7 +1,10 @@
-import torch
 import cv2
 import numpy as np
-from typing import List
+from typing import List, Dict, Any, Optional
+import requests
+import base64
+from io import BytesIO
+from PIL import Image
 
 try:
     import supervision as sv
@@ -9,163 +12,95 @@ except ImportError:
     sv = None
 
 try:
-    from transformers import AutoProcessor, RTDetrForObjectDetection
-    RTDETR_AVAILABLE = True
+    from inference import get_model
+    ROBOFLOW_SDK_AVAILABLE = True
 except ImportError:
-    RTDETR_AVAILABLE = False
+    ROBOFLOW_SDK_AVAILABLE = False
+    print("⚠️ Roboflow inference SDK not available - install with: pip install inference")
 
-class DetectionManager:
-    def __init__(self, config, superanimal_model=None):
+class RacerDetectionManager:
+    """Simplified detection using Roboflow model for horse+jockey compound entities"""
+    
+    def __init__(self, config):
         self.config = config
-        self.superanimal = superanimal_model
-        
-        # If no SuperAnimal provided but needed, create it with config
-        if not self.superanimal and self.config.horse_detector in ['superanimal', 'both']:
-            from models import SuperAnimalQuadruped
-            self.superanimal = SuperAnimalQuadruped(device=self.config.device, config=self.config)  # 🔥 Pass config
-        
-        # Setup RT-DETR detector
-        self.rtdetr_detector = None
-        self.rtdetr_processor = None
-        self.setup_rtdetr()
+        self.roboflow_model = None
+        self.setup_roboflow_model()
     
-    def setup_rtdetr(self):
-        if self.config.human_detector == 'rtdetr' or self.config.horse_detector in ['rtdetr', 'both']:
-            if RTDETR_AVAILABLE:
-                try:
-                    self.rtdetr_processor = AutoProcessor.from_pretrained("PekingU/rtdetr_r50vd_coco_o365")
-                    self.rtdetr_detector = RTDetrForObjectDetection.from_pretrained("PekingU/rtdetr_r50vd_coco_o365")
-                    self.rtdetr_detector.to(self.config.device)
-                    print("✅ RT-DETR detector loaded")
-                except Exception as e:
-                    print(f"❌ RT-DETR failed: {e}")
-    
-    def detect_humans(self, frame: np.ndarray):
-        """Detect humans/jockeys in frame"""
-        if self.config.human_detector == 'rtdetr' and self.rtdetr_detector:
-            return self._detect_rtdetr(frame, class_filter=[0], confidence=self.config.confidence_human_detection)
+    def setup_roboflow_model(self):
+        """Initialize Roboflow model"""
+        if not hasattr(self.config, 'roboflow_api_key') or not self.config.roboflow_api_key:
+            print("❌ Roboflow API key not configured")
+            return
+        
+        if not hasattr(self.config, 'roboflow_model_id') or not self.config.roboflow_model_id:
+            print("❌ Roboflow model ID not configured")
+            return
+        
+        if ROBOFLOW_SDK_AVAILABLE:
+            try:
+                self.roboflow_model = get_model(
+                    model_id=self.config.roboflow_model_id, 
+                    api_key=self.config.roboflow_api_key
+                )
+                print(f"✅ Roboflow model loaded: {self.config.roboflow_model_id}")
+            except Exception as e:
+                print(f"❌ Failed to load Roboflow model: {e}")
+                print("Check API key and model ID in config")
         else:
-            return sv.Detections.empty() if sv else []
+            print("❌ Roboflow SDK not available - install with: pip install inference")
     
-    def detect_horses(self, frame: np.ndarray):
-        """Detect horses in frame"""
-        if self.config.horse_detector == 'rtdetr' and self.rtdetr_detector:
-            return self._detect_rtdetr(frame, class_filter=[17], confidence=self.config.confidence_horse_detection)
-        elif self.config.horse_detector == 'superanimal' and self.superanimal:
-            return self.superanimal.detect_quadrupeds(frame, self.config.confidence_horse_detection)
-        elif self.config.horse_detector == 'both':
-            # Primary: RT-DETR, Fallback: SuperAnimal
-            horse_detections = self._detect_rtdetr(frame, class_filter=[17], confidence=self.config.confidence_horse_detection)
-            if sv and len(horse_detections) == 0 and self.superanimal:
-                horse_detections = self.superanimal.detect_quadrupeds(frame, self.config.confidence_horse_detection)
-            return horse_detections
+    def detect_racers(self, frame: np.ndarray) -> 'sv.Detections':
+        """Detect horse+jockey compound entities using Roboflow model"""
+        if self.roboflow_model:
+            return self._detect_with_sdk(frame)
         else:
+            print("❌ No Roboflow model available")
             return sv.Detections.empty() if sv else []
     
-    def _detect_rtdetr(self, frame: np.ndarray, class_filter: List[int], confidence: float = None):
-        """RT-DETR detection with improved confidence handling for tracking"""
-        if not self.rtdetr_detector or not self.rtdetr_processor:
-            return sv.Detections.empty() if sv else []
-        
-        conf_threshold = confidence if confidence is not None else 0.3
-        
+    def _detect_with_sdk(self, frame: np.ndarray) -> 'sv.Detections':
+        """Detect using Roboflow SDK - fixed to match working approach"""
         try:
-            from PIL import Image
+            # Convert BGR to RGB for Roboflow
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            pil_image = Image.fromarray(frame_rgb)
             
-            inputs = self.rtdetr_processor(images=pil_image, return_tensors="pt").to(self.config.device)
+            # Run inference - get first result like in working code
+            results = self.roboflow_model.infer(
+                frame_rgb,
+                confidence=getattr(self.config, 'roboflow_confidence', 0.5),
+                iou_threshold=0.5
+            )[0]  # Take first result like working code
             
-            with torch.no_grad():
-                outputs = self.rtdetr_detector(**inputs)
+            # Use supervision's built-in conversion - same as working code
+            detections = sv.Detections.from_inference(results)
             
-            results = self.rtdetr_processor.post_process_object_detection(
-                outputs, 
-                target_sizes=torch.tensor([(pil_image.height, pil_image.width)]), 
-                threshold=conf_threshold
-            )
+            print(f"🔍 Roboflow SDK: {len(detections)} detections")
+            if len(detections) > 0:
+                print(f"   Confidences: {detections.confidence}")
+                print(f"   Has masks: {detections.mask is not None}")
             
-            if len(results) > 0:
-                result = results[0]
-                
-                # Filter for desired classes - ensure class_filter tensor is on same device
-                class_filter_tensor = torch.tensor(class_filter, device=result["labels"].device)
-                class_mask = torch.isin(result["labels"], class_filter_tensor)
-                
-                if class_mask.any():
-                    filtered_boxes = result["boxes"][class_mask].cpu().numpy()
-                    filtered_scores = result["scores"][class_mask].cpu().numpy()
-                    filtered_labels = result["labels"][class_mask].cpu().numpy()
-                    
-                    # Sort by confidence (descending) for better tracking
-                    sort_indices = np.argsort(filtered_scores)[::-1]
-                    filtered_boxes = filtered_boxes[sort_indices]
-                    filtered_scores = filtered_scores[sort_indices]
-                    filtered_labels = filtered_labels[sort_indices]
-                    
-                    if sv:
-                        return sv.Detections(
-                            xyxy=filtered_boxes,
-                            confidence=filtered_scores,
-                            class_id=filtered_labels
-                        )
-                    else:
-                        # Convert to COCO format for legacy support
-                        coco_boxes = filtered_boxes.copy()
-                        coco_boxes[:, 2] = coco_boxes[:, 2] - coco_boxes[:, 0]  # width
-                        coco_boxes[:, 3] = coco_boxes[:, 3] - coco_boxes[:, 1]  # height
-                        return coco_boxes
-            
-            return sv.Detections.empty() if sv else []
+            return detections
             
         except Exception as e:
-            print(f"❌ Error in RT-DETR detection: {e}")
+            print(f"❌ Roboflow SDK detection failed: {e}")
+            import traceback
+            traceback.print_exc()
             return sv.Detections.empty() if sv else []
     
-    def filter_jockeys(self, human_detections, horse_detections):
-        """Filter humans that overlap with horses (jockeys)"""
-        if not sv:
-            return human_detections
-        
-        if len(human_detections) == 0 or len(horse_detections) == 0:
-            return sv.Detections.empty()
-        
-        jockey_indices = []
-        
-        for i, human_box in enumerate(human_detections.xyxy):
-            hx1, hy1, hx2, hy2 = human_box
-            hw, hh = hx2 - hx1, hy2 - hy1
-            
-            for horse_box in horse_detections.xyxy:
-                rx1, ry1, rx2, ry2 = horse_box
-                
-                # Calculate intersection
-                ix1 = max(hx1, rx1)
-                iy1 = max(hy1, ry1)
-                ix2 = min(hx2, rx2)
-                iy2 = min(hy2, ry2)
-                
-                if ix1 < ix2 and iy1 < iy2:
-                    intersection_area = (ix2 - ix1) * (iy2 - iy1)
-                    human_area = hw * hh
-                    overlap_ratio = intersection_area / human_area if human_area > 0 else 0
-                    
-                    if overlap_ratio >= self.config.jockey_overlap_threshold:
-                        jockey_indices.append(i)
-                        break
-        
-        if jockey_indices:
-            # Preserve tracking attributes if they exist
-            result_detections = sv.Detections(
-                xyxy=human_detections.xyxy[jockey_indices],
-                confidence=human_detections.confidence[jockey_indices],
-                class_id=human_detections.class_id[jockey_indices]
-            )
-            
-            # Copy tracking information if available
-            if hasattr(human_detections, 'tracker_id'):
-                result_detections.tracker_id = human_detections.tracker_id[jockey_indices]
-            
-            return result_detections
+    def get_masks(self, detections) -> List[np.ndarray]:
+        """Get segmentation masks from detections"""
+        if hasattr(detections, 'mask') and detections.mask is not None:
+            return [mask for mask in detections.mask]
         else:
-            return sv.Detections.empty()
+            # Generate rectangular masks from bounding boxes if no masks
+            masks = []
+            if hasattr(detections, 'xyxy') and len(detections) > 0:
+                # Default frame size - should be passed from actual frame
+                frame_h, frame_w = 1080, 1920  
+                for bbox in detections.xyxy:
+                    mask = np.zeros((frame_h, frame_w), dtype=bool)
+                    x1, y1, x2, y2 = map(int, bbox)
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(frame_w, x2), min(frame_h, y2)
+                    mask[y1:y2, x1:x2] = True
+                    masks.append(mask)
+            return masks
