@@ -2,7 +2,7 @@
 # Single Roboflow model detects horse+jockey as compound entity
 
 # Basic Settings
-video_path: 'inputs/horse_8.mp4'
+video_path: 'inputs/horse_9.mp4'
 output_path: null
 display: false
 device: 'cuda'
@@ -10,8 +10,8 @@ max_frames: null
 
 # Roboflow Configuration
 roboflow_api_key: 'wFo5HAaMOWxmTBCubny1'
-roboflow_model_id: 'del_mar_pan_seg-mdxam/1'
-roboflow_confidence: 0.5
+roboflow_model_id: 'del_mar_pan_seg-mdxam/2'
+roboflow_confidence: 0.7
 
 # Pose Estimation - Run on compound racer entities
 horse_pose_estimator: 'both'  # superanimal, vitpose, both
@@ -38,12 +38,12 @@ deepocsort_config:
   
   # === ASSOCIATION ===
   asso_func: "iou"
-  w_association_emb: 0.6
+  w_association_emb: 0.9
   alpha_fixed_emb: 0.9
-  aw_param: 0.5
+  aw_param: 0.2
   
   # === FEATURES ===
-  embedding_off: true
+  embedding_off: false
   cmc_off: false
   aw_off: false
 

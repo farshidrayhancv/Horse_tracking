@@ -1,113 +1,167 @@
 #!/usr/bin/env python3
-"""
-Test script to debug Roboflow integration - match working approach
-"""
-
+import os
 import cv2
 import numpy as np
-import supervision as sv
-from pathlib import Path
-from config import Config
 
-def test_roboflow_detection(config_file: str, test_frames: int = 10):
-    """Test Roboflow detection using same approach as working code"""
-    
-    # Load config
-    config = Config(config_file)
-    
-    print(f"🧪 Testing Roboflow Detection (Matching Working Code)")
-    print(f"   Model: {config.roboflow_model_id}")
-    print(f"   API Key: {config.roboflow_api_key[:10]}..." if config.roboflow_api_key else "   API Key: NOT SET")
-    print(f"   Confidence: {config.roboflow_confidence}")
-    print(f"   Video: {config.video_path}")
-    
-    # Test direct approach like working code
+def check_display():
+    """Check if display is available"""
     try:
-        from inference import get_model
-        print(f"✅ Inference SDK available")
-        
-        # Load model exactly like working code
-        model = get_model(model_id=config.roboflow_model_id, api_key=config.roboflow_api_key)
-        print(f"✅ Model loaded successfully")
-        
-    except Exception as e:
-        print(f"❌ Failed to load model: {e}")
-        return
-    
-    # Open video
-    cap = cv2.VideoCapture(config.video_path)
-    if not cap.isOpened():
-        print(f"❌ Cannot open video: {config.video_path}")
-        return
-    
-    print(f"\n📹 Testing first {test_frames} frames with direct inference...")
-    
-    for frame_num in range(test_frames):
-        ret, frame = cap.read()
-        if not ret:
-            print(f"❌ Could not read frame {frame_num}")
-            break
-        
-        print(f"\n--- Frame {frame_num} ---")
-        print(f"Frame shape: {frame.shape}")
-        
-        # Test detection exactly like working code
-        try:
-            # Step 1: Run inference (like working code)
-            results = model.infer(frame)[0]  # Take first result
-            print(f"✅ Inference successful, got results type: {type(results)}")
-            
-            # Step 2: Convert to detections (like working code)  
-            detections = sv.Detections.from_inference(results)
-            print(f"✅ Conversion successful")
-            
-            print(f"✅ Detection Results:")
-            print(f"   Count: {len(detections)}")
-            
-            if len(detections) > 0:
-                print(f"   Boxes shape: {detections.xyxy.shape}")
-                print(f"   Confidences: {detections.confidence}")
-                if hasattr(detections, 'class_id') and detections.class_id is not None:
-                    print(f"   Class IDs: {detections.class_id}")
-                if hasattr(detections, 'mask') and detections.mask is not None:
-                    print(f"   Masks shape: {detections.mask.shape}")
-                    print(f"   Any true mask pixels: {detections.mask.any()}")
-                
-                # Test individual detection details
-                for i, (bbox, conf) in enumerate(zip(detections.xyxy, detections.confidence)):
-                    x1, y1, x2, y2 = bbox
-                    w, h = x2 - x1, y2 - y1
-                    print(f"   Detection {i}: conf={conf:.3f}, size={w:.0f}x{h:.0f}, pos=({x1:.0f},{y1:.0f})")
-            else:
-                print(f"   ❌ No detections found")
-                print(f"   Try lowering confidence threshold from {config.roboflow_confidence}")
-                
-        except Exception as e:
-            print(f"❌ Detection failed: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    cap.release()
-    
-    print(f"\n🏁 Direct Test Complete!")
-    print(f"\n💡 Comparison with your working code:")
-    print(f"   Working video: /home/farshid/Downloads/del_mar_pan_poc_1.mp4")  
-    print(f"   Test video: {config.video_path}")
-    print(f"   Working model: del_mar_pan_seg-mdxam/1")
-    print(f"   Test model: {config.roboflow_model_id}")
-    
-    if config.video_path != "/home/farshid/Downloads/del_mar_pan_poc_1.mp4":
-        print(f"\n🎯 SUGGESTION: Try testing with the same video file:")
-        print(f"   Change video_path in config.yaml to: '/home/farshid/Downloads/del_mar_pan_poc_1.mp4'")
+        test_img = np.zeros((100, 100, 3), dtype=np.uint8)
+        cv2.imshow('test', test_img)
+        cv2.waitKey(1)
+        cv2.destroyAllWindows()
+        return True
+    except:
+        return False
 
 def main():
-    import sys
+    print("DEBUG: Starting main()")
     
-    if len(sys.argv) != 2:
-        print("Usage: python test_roboflow.py config.yaml")
-        sys.exit(1)
+    # Check display FIRST before importing heavy libraries
+    display_available = check_display()
+    print(f"DEBUG: Display check completed: {display_available}")
     
-    test_roboflow_detection(sys.argv[1])
+    # Import libraries
+    print("DEBUG: About to import heavy libraries")
+    import supervision as sv
+    from pathlib import Path
+    from boxmot import DeepOcSort
+    from inference import get_model
+    print("DEBUG: Heavy libraries imported")
+    
+    # Setup Roboflow model
+    print("DEBUG: Setting up Roboflow model")
+    try:
+        model = get_model(model_id="del_mar_pan_seg-mdxam/2", api_key="wFo5HAaMOWxmTBCubny1")
+        print("DEBUG: Roboflow model loaded successfully")
+    except Exception as e:
+        print(f"ERROR: Failed to load Roboflow model: {e}")
+        return
+
+    # Setup annotators
+    print("DEBUG: Setting up annotators")
+    mask_annotator = sv.MaskAnnotator(opacity=0.4)
+    box_annotator = sv.BoxAnnotator()
+    label_annotator = sv.LabelAnnotator()
+    color_palette = sv.ColorPalette.DEFAULT
+    print("DEBUG: Annotators created")
+
+    # Setup tracker
+    reid_weight_pth = Path("reid_test_weights/osnet_ibn_x1_0_imagenet.pth")
+    reid_weight_pt = Path("reid_test_weights/osnet_ibn_x1_0_imagenet.pt")
+    if reid_weight_pth.exists() and not reid_weight_pt.exists():
+        import shutil
+        shutil.copy2(reid_weight_pth, reid_weight_pt)
+
+    print("About to create tracker...")
+    tracker = DeepOcSort(reid_weights=reid_weight_pt, device=0, half=True)
+    print("Tracker created successfully")
+
+    print("Warming up tracker...")
+    dummy_det = np.array([[100, 100, 200, 200, 0.9, 0]], dtype=np.float64)
+    dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    _ = tracker.update(dummy_det, dummy_frame)
+    print("Tracker warmed up!")
+
+    # Load video
+    cap = cv2.VideoCapture("/home/farshid/Downloads/del_mar_pan_poc_1.mp4")
+
+    frame_num = 0
+    print("DEBUG: Starting main loop")
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+            
+        frame_num += 1
+        
+        # Run live inference with Roboflow model
+        try:
+            # Convert BGR to RGB for Roboflow
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Run inference with correct parameters
+            results = model.infer(
+                rgb_frame,
+                confidence=0.4,  # Fixed: was 40, should be 0.4
+                iou_threshold=0.5  # Fixed: was overlap=30
+            )[0]  # Take first result
+            
+            # Use supervision's built-in conversion
+            detections = sv.Detections.from_inference(results)
+            
+            if frame_num % 30 == 0:
+                print(f"DEBUG: Frame {frame_num} - Found {len(detections)} detections")
+                if len(detections) > 0:
+                    print(f"DEBUG: Confidences: {detections.confidence}")
+                    print(f"DEBUG: Bounding boxes: {detections.xyxy}")
+                    
+        except Exception as e:
+            print(f"ERROR: Live inference failed on frame {frame_num}: {e}")
+            detections = sv.Detections.empty()
+        
+        # Update tracker
+        if len(detections) > 0:
+            xyxy = np.array(detections.xyxy, dtype=np.float64)
+            confidence = np.array(detections.confidence, dtype=np.float64)
+            class_ids = np.zeros(len(detections), dtype=np.float64)
+            dets_np = np.column_stack((xyxy, confidence, class_ids))
+            
+            tracks = tracker.update(dets_np, frame)
+            
+            if tracks is not None and len(tracks) > 0:
+                detections = sv.Detections(
+                    xyxy=tracks[:, :4],
+                    confidence=tracks[:, 5],
+                    class_id=tracks[:, 6].astype(np.int32),
+                    tracker_id=tracks[:, 4].astype(np.int32)
+                )
+                
+                if frame_num % 30 == 0:
+                    print(f"DEBUG: Tracker assigned IDs: {detections.tracker_id}")
+        
+        # Annotate frame with unique colors and labels
+        annotated = frame.copy()
+        if len(detections) > 0:
+            # Apply mask annotation first
+            if hasattr(detections, 'mask') and detections.mask is not None:
+                annotated = mask_annotator.annotate(annotated, detections)
+            
+            # Create unique colors for each tracker ID
+            if hasattr(detections, 'tracker_id') and detections.tracker_id is not None:
+                # Generate unique colors for each tracker ID
+                unique_colors = []
+                labels = []
+                for i, (conf, track_id) in enumerate(zip(detections.confidence, detections.tracker_id)):
+                    # Get unique color based on tracker ID
+                    color = color_palette.by_idx(track_id % len(color_palette.colors))
+                    unique_colors.append(color)
+                    # Create label with confidence and tracker ID
+                    labels.append(f"ID:{track_id} {conf:.2f}")
+                
+                # Create box annotator with unique colors
+                colored_box_annotator = sv.BoxAnnotator(color=sv.ColorPalette(unique_colors))
+                annotated = colored_box_annotator.annotate(annotated, detections)
+                
+                # Add labels
+                annotated = label_annotator.annotate(annotated, detections, labels=labels)
+            else:
+                # Fallback to regular box annotation if no tracker IDs
+                annotated = box_annotator.annotate(annotated, detections)
+                labels = [f"{conf:.2f}" for conf in detections.confidence]
+                annotated = label_annotator.annotate(annotated, detections, labels=labels)
+        
+        if display_available:
+            cv2.imshow('Roboflow Detections', annotated)
+            if cv2.waitKey(30) & 0xFF == ord('q'):
+                break
+        else:
+            if frame_num % 100 == 0:
+                print(f"Frame {frame_num} - No display available")
+
+    cap.release()
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()
