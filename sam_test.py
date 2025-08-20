@@ -26,37 +26,35 @@ except ImportError:
     SAMURAI_AVAILABLE = False
     print("❌ SAMURAI not available")
 
-try:
-    from boxmot import DeepOcSort
-    DEEPOCSORT_AVAILABLE = True
-except ImportError:
-    DEEPOCSORT_AVAILABLE = False
-    print("❌ DeepOCSORT not available")
-
 from config import Config
 
-class SAMURAIUnifiedTracker:
-    def __init__(self, device=0, min_detections=3, iou_threshold=0.6, max_tracks=6, 
-                 centroid_update_interval=30, use_mask_centroids=False):
+class SAMURAIPrimaryTracker:
+    """ARCHITECTURE 1: SAMURAI-CENTRIC TRACKING SYSTEM"""
+    
+    def __init__(self, device=0, min_detections=4, max_tracks=6, 
+                 detection_reinit_interval=100, use_mask_centroids=False):
         self.device = device
         self.min_detections = min_detections
-        self.iou_threshold = iou_threshold
-        self.max_tracks = max_tracks
-        self.centroid_update_interval = centroid_update_interval
+        self.max_tracks = max_tracks  # Fixed 6 horses for racing
+        self.detection_reinit_interval = detection_reinit_interval
         self.use_mask_centroids = use_mask_centroids
         
         self.samurai_active = False
-        self.active_tracks = {}
+        self.active_tracks = {}  # track_id -> track_data
         self.detection_buffer = deque(maxlen=10)
         self.next_track_id = 0
         self.frames_since_activation = 0
         
         self.predictor = None
         
+        # ARCHITECTURE 1 SPECIFIC
+        self.lost_track_positions = {}  # Store positions of recently lost tracks
+        self.track_confidence_history = {}  # Track confidence over time
+        
     def _get_predictor(self):
         """Lazy init single shared predictor"""
         if self.predictor is None:
-            print("🔧 Initializing shared SAM2 predictor...")
+            print("🔧 Initializing SAMURAI predictor for PRIMARY tracking...")
             self.predictor = SAM2ImagePredictor.from_pretrained("facebook/sam2-hiera-large")
             if torch.cuda.is_available():
                 self.predictor.model.to("cuda")
@@ -64,39 +62,83 @@ class SAMURAIUnifiedTracker:
         return self.predictor
         
     def process_frame(self, frame_idx, frame, detections):
+        """ARCHITECTURE 1: SAMURAI PRIMARY with detection backup"""
         self.detection_buffer.append({
             'frame_idx': frame_idx,
             'detections': detections,
             'centroids': self._compute_centroids(detections)
         })
         
-        # Activate when threshold met
-        if not self.samurai_active and len(detections) > self.min_detections:
-            print(f"🚀 Activating SAMURAI at frame {frame_idx} with {len(detections)} detections")
+        # COLD START: Bootstrap SAMURAI with detections
+        if not self.samurai_active and len(detections) >= self.min_detections:
+            print(f"🚀 COLD START: Bootstrapping SAMURAI PRIMARY at frame {frame_idx}")
             self.samurai_active = True
             self.frames_since_activation = 0
-            self._initialize_tracks(frame, detections)
+            self._bootstrap_primary_tracks(frame, detections)
             
         if not self.samurai_active:
-            return detections, {}
-        
+            # Before activation, return detections as-is
+            return self._create_detection_output(detections), {}
+            
         self.frames_since_activation += 1
         
-        should_update_centroids = (self.frames_since_activation % self.centroid_update_interval == 0)
-        if should_update_centroids and len(detections) > 0:
-            centroid_type = "mask" if self.use_mask_centroids else "bbox"
-            print(f"🔄 Correcting SAMURAI centroids ({centroid_type}) at frame {frame_idx}")
-            self._update_tracking_centroids(frame, detections)
-            
-        # Update existing tracks
-        track_associations = {}
-        lost_tracks = []
+        # SAMURAI PRIMARY TRACKING
+        samurai_detections = self._run_primary_tracking(frame, frame_idx)
         
+        # BACKUP REINITIALIZATION: Only when tracks are lost
+        if len(self.active_tracks) < self.max_tracks and len(detections) > 0:
+            self._reinitialize_lost_tracks(frame, detections, frame_idx)
+            
+        # OPPORTUNISTIC ENHANCEMENT: Optional detection-based improvements
+        should_opportunistic_update = (self.frames_since_activation % self.detection_reinit_interval == 0)
+        if should_opportunistic_update and len(detections) > 2:
+            self._opportunistic_track_enhancement(frame, detections, frame_idx)
+            
+        return samurai_detections, {"samurai_primary": len(self.active_tracks)}
+    
+    def _bootstrap_primary_tracks(self, frame, detections):
+        """COLD START: Initialize exactly max_tracks from detections"""
         predictor = self._get_predictor()
         predictor.set_image(frame)
         
+        # Use most stable detection centroids for bootstrapping
+        stable_points = self._find_stable_points()
+        if not stable_points:
+            stable_points = self._compute_centroids(detections)
+        
+        bootstrap_points = stable_points[:self.max_tracks]
+        
+        for i, point in enumerate(bootstrap_points):
+            masks, scores, _ = predictor.predict(
+                point_coords=np.array([point]),
+                point_labels=np.array([1]),
+                multimask_output=False
+            )
+            
+            if len(masks) > 0 and scores[0] > 0.4:
+                self.active_tracks[self.next_track_id] = {
+                    'mask': masks[0],
+                    'last_point': point,
+                    'lost_frames': 0,
+                    'confidence': scores[0],
+                    'birth_frame': self.frames_since_activation
+                }
+                self.track_confidence_history[self.next_track_id] = [scores[0]]
+                self.next_track_id += 1
+                print(f"✅ BOOTSTRAP: Primary track {self.next_track_id-1} initialized")
+                
+        print(f"🎯 SAMURAI PRIMARY: {len(self.active_tracks)}/{self.max_tracks} tracks active")
+        torch.cuda.empty_cache()
+    
+    def _run_primary_tracking(self, frame, frame_idx):
+        """SAMURAI PRIMARY: Autonomous tracking without detection dependency"""
+        predictor = self._get_predictor()
+        predictor.set_image(frame)
+        
+        active_detections = []
+        lost_tracks = []
+        
         for track_id, track_data in self.active_tracks.items():
-            # Use previous mask centroid as point prompt
             mask_point = track_data['last_point']
             
             masks, scores, _ = predictor.predict(
@@ -105,149 +147,154 @@ class SAMURAIUnifiedTracker:
                 multimask_output=False
             )
             
-            if len(masks) > 0 and scores[0] > 0.3:
+            if len(masks) > 0 and scores[0] > 0.2:  # Lower threshold for primary tracking
                 mask = masks[0]
                 track_data['mask'] = mask
                 track_data['last_point'] = self._get_mask_centroid(mask)
+                track_data['confidence'] = scores[0]
                 track_data['lost_frames'] = 0
                 
-                # Find merged detections
-                merged_indices = []
-                for det_idx in range(len(detections)):
-                    det_mask = self._bbox_to_mask(detections.xyxy[det_idx], frame.shape)
-                    iou = self._compute_mask_iou(mask, det_mask)
-                    if iou > self.iou_threshold:
-                        merged_indices.append(det_idx)
-                        
-                if merged_indices:
-                    track_associations[track_id] = merged_indices
+                # Update confidence history
+                if track_id in self.track_confidence_history:
+                    self.track_confidence_history[track_id].append(scores[0])
+                    if len(self.track_confidence_history[track_id]) > 10:
+                        self.track_confidence_history[track_id].pop(0)
+                
+                # Create detection from SAMURAI track
+                bbox = self._mask_to_bbox(mask)
+                active_detections.append({
+                    'bbox': bbox,
+                    'confidence': scores[0],
+                    'track_id': track_id,
+                    'mask': mask
+                })
+                
             else:
                 track_data['lost_frames'] += 1
-                if track_data['lost_frames'] > 5:
+                if track_data['lost_frames'] > 8:  # Longer patience for primary tracking
+                    self.lost_track_positions[track_id] = track_data['last_point']
                     lost_tracks.append(track_id)
+                    print(f"💀 LOST: Primary track {track_id} after {track_data['lost_frames']} frames")
                     
-        # Remove lost tracks
+        # Remove definitively lost tracks
         for track_id in lost_tracks:
             del self.active_tracks[track_id]
-            print(f"❌ Lost track {track_id}")
             
-        # Add new tracks if under limit
-        if len(self.active_tracks) < self.max_tracks:
-            all_associated = set()
-            for indices in track_associations.values():
-                all_associated.update(indices)
-                
-            unassociated = [i for i in range(len(detections)) if i not in all_associated]
-            if unassociated:
-                self._add_limited_tracks(frame, detections, unassociated)
-                
-        return self._create_unified_output(detections, track_associations), track_associations
+        return self._create_samurai_detections(active_detections)
     
-    def _initialize_tracks(self, frame, detections):
-        """Initialize up to max_tracks horses"""
-        stable_points = self._find_stable_points()
-        
-        if not stable_points:
-            stable_points = self._compute_centroids(detections)
-            
-        predictor = self._get_predictor()
-        predictor.set_image(frame)
-        
-        # Only track first N horses
-        for point in stable_points[:self.max_tracks]:
-            masks, scores, _ = predictor.predict(
-                point_coords=np.array([point]),
-                point_labels=np.array([1]),
-                multimask_output=False
-            )
-            
-            if len(masks) > 0 and scores[0] > 0.5:
-                self.active_tracks[self.next_track_id] = {
-                    'mask': masks[0],
-                    'last_point': point,
-                    'lost_frames': 0,
-                    'init_frame': frame.shape
-                }
-                self.next_track_id += 1
-                print(f"✅ Initialized track {self.next_track_id-1}")
-                
-        torch.cuda.empty_cache()
-                
-    def _add_limited_tracks(self, frame, detections, unassociated_indices):
-        """Add new tracks only if under limit"""
-        slots_available = self.max_tracks - len(self.active_tracks)
-        if slots_available <= 0:
+    def _reinitialize_lost_tracks(self, frame, detections, frame_idx):
+        """BACKUP REINITIALIZATION: Use detections only to replace lost tracks"""
+        if len(self.active_tracks) >= self.max_tracks:
             return
             
+        slots_needed = self.max_tracks - len(self.active_tracks)
+        print(f"🔧 REINIT: Need {slots_needed} tracks, have {len(detections)} detections")
+        
         predictor = self._get_predictor()
         predictor.set_image(frame)
         
-        for idx in unassociated_indices[:slots_available]:
-            centroid = self._get_detection_centroid(detections, idx)
+        # Try to reinitialize near lost track positions first
+        reinitialized = 0
+        
+        if self.use_mask_centroids and len(detections) > 0:
+            candidate_centroids = self._get_mask_centroids_from_detections(frame, detections)
+        else:
+            candidate_centroids = self._compute_centroids(detections)
+        
+        # Prioritize positions near recently lost tracks
+        reinit_candidates = []
+        
+        for centroid in candidate_centroids[:slots_needed * 2]:  # More candidates than slots
+            too_close_to_existing = False
             
+            # Don't reinitialize too close to existing tracks
+            for track_data in self.active_tracks.values():
+                if np.linalg.norm(centroid - track_data['last_point']) < 80:
+                    too_close_to_existing = True
+                    break
+                    
+            if not too_close_to_existing:
+                reinit_candidates.append(centroid)
+        
+        for centroid in reinit_candidates[:slots_needed]:
             masks, scores, _ = predictor.predict(
                 point_coords=np.array([centroid]),
                 point_labels=np.array([1]),
                 multimask_output=False
             )
             
-            if len(masks) > 0 and scores[0] > 0.6:
+            if len(masks) > 0 and scores[0] > 0.5:  # Higher threshold for reinitialization
                 self.active_tracks[self.next_track_id] = {
                     'mask': masks[0],
                     'last_point': centroid,
                     'lost_frames': 0,
-                    'init_frame': frame.shape
+                    'confidence': scores[0],
+                    'birth_frame': self.frames_since_activation
                 }
+                self.track_confidence_history[self.next_track_id] = [scores[0]]
                 self.next_track_id += 1
-                print(f"✅ Added new track {self.next_track_id-1}")
+                reinitialized += 1
+                print(f"🔄 REINIT: Track {self.next_track_id-1} reinitialized")
                 
-    def _update_tracking_centroids(self, frame, detections):
-        """Correct tracking drift using bbox or mask centroids"""
+        if reinitialized > 0:
+            print(f"✅ REINIT SUCCESS: {reinitialized} tracks restored, {len(self.active_tracks)}/{self.max_tracks} active")
+    
+    def _opportunistic_track_enhancement(self, frame, detections, frame_idx):
+        """OPPORTUNISTIC: Improve existing tracks when high-quality detections available"""
+        if len(detections) < 3:  # Only enhance when we have good detection coverage
+            return
+            
+        enhanced_count = 0
+        enhancement_type = "mask" if self.use_mask_centroids else "bbox"
+        
+        print(f"🔍 OPPORTUNISTIC: Enhancing tracks with {enhancement_type} centroids")
+        
         predictor = self._get_predictor()
         predictor.set_image(frame)
         
         if self.use_mask_centroids:
-            correction_centroids = self._get_mask_centroids_from_detections(frame, detections)
+            detection_centroids = self._get_mask_centroids_from_detections(frame, detections)
         else:
-            correction_centroids = self._compute_centroids(detections)
-        
-        updated_tracks = 0
+            detection_centroids = self._compute_centroids(detections)
         
         for track_id, track_data in self.active_tracks.items():
             current_point = track_data['last_point']
             
+            # Find nearby detection centroid (not mandatory)
             closest_centroid = None
             min_distance = float('inf')
             
-            for centroid in correction_centroids:
+            for centroid in detection_centroids:
                 distance = np.linalg.norm(current_point - centroid)
-                if distance < min_distance and distance < 100:
+                if distance < min_distance and distance < 120:  # Relaxed threshold
                     min_distance = distance
                     closest_centroid = centroid
             
             if closest_centroid is not None:
+                # Only enhance if it improves confidence
                 masks, scores, _ = predictor.predict(
                     point_coords=np.array([closest_centroid]),
                     point_labels=np.array([1]),
                     multimask_output=False
                 )
                 
-                if len(masks) > 0 and scores[0] > 0.4:
+                if len(masks) > 0 and scores[0] > track_data['confidence']:
                     track_data['last_point'] = closest_centroid
                     track_data['mask'] = masks[0]
-                    updated_tracks += 1
+                    track_data['confidence'] = scores[0]
+                    enhanced_count += 1
         
-        if updated_tracks > 0:
-            print(f"✅ Corrected {updated_tracks} tracking centroids")
+        if enhanced_count > 0:
+            print(f"✨ ENHANCED: {enhanced_count} tracks improved opportunistically")
         else:
-            print(f"⚠️  No centroids corrected - may indicate tracking degradation")
+            print(f"➡️  ENHANCEMENT: No improvements needed - SAMURAI tracking well")
+    
     def _get_mask_centroids_from_detections(self, frame, detections):
         """Generate masks from detections and extract precise centroids"""
         predictor = self._get_predictor()
         predictor.set_image(frame)
         
         mask_centroids = []
-        
         for i in range(len(detections)):
             bbox_centroid = self._get_detection_centroid(detections, i)
             
@@ -266,11 +313,18 @@ class SAMURAIUnifiedTracker:
         return mask_centroids
                 
     def _get_mask_centroid(self, mask):
-        """CRITICAL: Get centroid of mask - RESTORED METHOD"""
+        """Get centroid of mask"""
         y_indices, x_indices = np.where(mask)
         if len(y_indices) > 0:
             return np.array([np.mean(x_indices), np.mean(y_indices)])
         return np.array([0, 0])
+        
+    def _mask_to_bbox(self, mask):
+        """Convert mask to bounding box"""
+        y_indices, x_indices = np.where(mask)
+        if len(y_indices) > 0:
+            return [np.min(x_indices), np.min(y_indices), np.max(x_indices), np.max(y_indices)]
+        return [0, 0, 10, 10]
         
     def _find_stable_points(self):
         if len(self.detection_buffer) < 3:
@@ -314,71 +368,43 @@ class SAMURAIUnifiedTracker:
             (box[0] + box[2]) / 2,
             (box[1] + box[3]) / 2
         ])
+    
+    def _create_samurai_detections(self, active_detections):
+        """Convert SAMURAI tracks to supervision Detections format"""
+        if not active_detections:
+            return sv.Detections.empty()
         
-    def _compute_mask_iou(self, mask1, mask2):
-        intersection = np.logical_and(mask1, mask2).sum()
-        union = np.logical_or(mask1, mask2).sum()
-        if union == 0:
-            return 0
-        return intersection / union
+        boxes = []
+        confidences = []
+        track_ids = []
+        masks = []
         
-    def _bbox_to_mask(self, bbox, shape):
-        mask = np.zeros(shape[:2], dtype=bool)
-        x1, y1, x2, y2 = map(int, bbox)
-        mask[y1:y2, x1:x2] = True
-        return mask
+        for det in active_detections:
+            boxes.append(det['bbox'])
+            confidences.append(det['confidence'])
+            track_ids.append(det['track_id'])
+            masks.append(det['mask'])
         
-    def _create_unified_output(self, original_detections, associations):
-        if not associations:
-            return original_detections
-            
-        unified_boxes = []
-        unified_confidences = []
-        unified_track_ids = []
-        
-        for track_id, detection_indices in associations.items():
-            if not detection_indices:
-                continue
-                
-            boxes = [original_detections.xyxy[i] for i in detection_indices]
-            boxes_array = np.array(boxes)
-            
-            merged_box = [
-                np.min(boxes_array[:, 0]),
-                np.min(boxes_array[:, 1]),
-                np.max(boxes_array[:, 2]),
-                np.max(boxes_array[:, 3])
-            ]
-            
-            unified_boxes.append(merged_box)
-            unified_confidences.append(np.mean([original_detections.confidence[i] for i in detection_indices]))
-            unified_track_ids.append(track_id)
-            
-        # Add untracked detections
-        all_tracked = set()
-        for indices in associations.values():
-            all_tracked.update(indices)
-            
-        for i in range(len(original_detections)):
-            if i not in all_tracked:
-                unified_boxes.append(original_detections.xyxy[i])
-                unified_confidences.append(original_detections.confidence[i])
-                unified_track_ids.append(-1)  # Untracked
-                
-        if unified_boxes:
-            return sv.Detections(
-                xyxy=np.array(unified_boxes),
-                confidence=np.array(unified_confidences),
-                class_id=np.zeros(len(unified_boxes), dtype=np.int32),
-                tracker_id=np.array(unified_track_ids)
-            )
-        return original_detections
+        return sv.Detections(
+            xyxy=np.array(boxes),
+            confidence=np.array(confidences),
+            class_id=np.zeros(len(boxes), dtype=np.int32),
+            tracker_id=np.array(track_ids),
+            mask=np.array(masks) if masks else None
+        )
+    
+    def _create_detection_output(self, detections):
+        """Before SAMURAI activation, pass through detections with no tracker_id"""
+        if len(detections) == 0:
+            detections.tracker_id = np.array([])
+        else:
+            detections.tracker_id = np.array([-1] * len(detections))
+        return detections
 
 class SupervisionVideoAnnotator:
-    """SUPERVISION-CENTRIC ANNOTATION SYSTEM"""
+    """SUPERVISION-CENTRIC ANNOTATION FOR ARCHITECTURE 1"""
     
     def __init__(self):
-        # Supervision annotators - PROPER ABSTRACTION LAYER
         self.box_annotator = sv.BoundingBoxAnnotator(
             thickness=3,
         )
@@ -391,80 +417,72 @@ class SupervisionVideoAnnotator:
         
         self.trace_annotator = sv.TraceAnnotator(
             thickness=3,
-            trace_length=30,
+            trace_length=50,  # Longer trails for primary tracking
             position=sv.Position.CENTER
         )
         
         self.mask_annotator = sv.MaskAnnotator(
-            opacity=0.4
+            opacity=0.3
         )
         
-        # Track colors using supervision color palette
         self.color_palette = sv.ColorPalette.DEFAULT
         
-        # Enhanced trail system
-        self.track_trails = {}
-        
-    def annotate_frame(self, frame, detections, unified_tracker, frame_idx, 
-                      samurai_active, samurai_merges):
-        """SUPERVISION-POWERED COMPREHENSIVE ANNOTATION"""
+    def annotate_frame(self, frame, detections, samurai_tracker, frame_idx, stats):
+        """ARCHITECTURE 1 ANNOTATION: Emphasize SAMURAI primary tracking"""
         annotated_frame = frame.copy()
         
-        # STEP 1: Draw SAMURAI masks using supervision
-        if samurai_active and unified_tracker.active_tracks:
-            annotated_frame = self._draw_samurai_masks_supervision(
-                annotated_frame, unified_tracker
+        # SAMURAI masks (primary visualization)
+        if samurai_tracker.samurai_active and samurai_tracker.active_tracks:
+            annotated_frame = self._draw_primary_samurai_masks(
+                annotated_frame, samurai_tracker
             )
         
-        # STEP 2: Supervision trail annotation
+        # Supervision trail annotation
         if hasattr(detections, 'tracker_id') and detections.tracker_id is not None:
             annotated_frame = self.trace_annotator.annotate(
                 scene=annotated_frame,
                 detections=detections
             )
         
-        # STEP 3: Supervision bounding box annotation
+        # Supervision bounding box annotation
         annotated_frame = self.box_annotator.annotate(
             scene=annotated_frame,
             detections=detections
         )
         
-        # STEP 4: Supervision label annotation
-        labels = self._generate_labels(detections)
+        # Enhanced labels for Architecture 1
+        labels = self._generate_primary_labels(detections)
         annotated_frame = self.label_annotator.annotate(
             scene=annotated_frame,
             detections=detections,
             labels=labels
         )
         
-        # STEP 5: Status overlay (OpenCV only for final display)
-        annotated_frame = self._draw_status_overlay(
+        # Architecture 1 status overlay
+        annotated_frame = self._draw_architecture1_status(
             annotated_frame, frame_idx, len(detections), 
-            len(unified_tracker.active_tracks), samurai_active, samurai_merges
+            len(samurai_tracker.active_tracks), samurai_tracker.samurai_active, stats
         )
         
         return annotated_frame
     
-    def _draw_samurai_masks_supervision(self, frame, unified_tracker):
-        """SUPERVISION MASK RENDERING - PROPER MULTI-MASK SUPPORT"""
-        if not unified_tracker.active_tracks:
+    def _draw_primary_samurai_masks(self, frame, samurai_tracker):
+        """Render SAMURAI masks as primary tracking indicators"""
+        if not samurai_tracker.active_tracks:
             return frame
         
-        # Prepare masks for supervision batch processing
         masks = []
         colors = []
         
-        for track_id, track_data in unified_tracker.active_tracks.items():
+        for track_id, track_data in samurai_tracker.active_tracks.items():
             raw_mask = track_data['mask']
             
-            # Ensure proper boolean mask
             if raw_mask.dtype != bool:
                 mask = raw_mask.astype(bool)
             else:
                 mask = raw_mask
                 
             if mask.shape[:2] != frame.shape[:2]:
-                print(f"⚠️  Mask shape mismatch Track {track_id}: {mask.shape} vs {frame.shape[:2]}")
                 continue
             
             masks.append(mask)
@@ -473,115 +491,86 @@ class SupervisionVideoAnnotator:
         if not masks:
             return frame
         
-        # Create supervision Detections for masks
         mask_detections = sv.Detections(
             xyxy=np.array([[0, 0, frame.shape[1], frame.shape[0]]] * len(masks)),
             mask=np.array(masks),
             class_id=np.arange(len(masks))
         )
         
-        # Use supervision mask annotator for proper multi-mask rendering
         annotated_frame = self.mask_annotator.annotate(
             scene=frame,
             detections=mask_detections
         )
         
-        # Add SAMURAI-specific centroids and labels
-        for track_id, track_data in unified_tracker.active_tracks.items():
+        # Primary track indicators
+        for track_id, track_data in samurai_tracker.active_tracks.items():
             centroid = track_data['last_point']
+            confidence = track_data['confidence']
             color_bgr = self.color_palette.by_idx(track_id).as_bgr()
             
-            # Draw track centroid
-            cv2.circle(annotated_frame, tuple(map(int, centroid)), 8, color_bgr, -1)
-            cv2.circle(annotated_frame, tuple(map(int, centroid)), 12, (255, 255, 255), 2)
+            # Larger indicators for primary tracks
+            cv2.circle(annotated_frame, tuple(map(int, centroid)), 12, color_bgr, -1)
+            cv2.circle(annotated_frame, tuple(map(int, centroid)), 16, (255, 255, 255), 3)
             
-            # Add SAMURAI track ID label
-            cv2.putText(annotated_frame, f"S{track_id}", 
-                       (int(centroid[0]) + 20, int(centroid[1]) - 15),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            # Primary track label
+            cv2.putText(annotated_frame, f"P{track_id}", 
+                       (int(centroid[0]) + 25, int(centroid[1]) - 20),
+                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3)
+            
+            # Confidence indicator
+            cv2.putText(annotated_frame, f"{confidence:.2f}", 
+                       (int(centroid[0]) + 25, int(centroid[1]) + 5),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
         return annotated_frame
     
-    def _generate_labels(self, detections):
-        """Generate supervision-compatible labels"""
+    def _generate_primary_labels(self, detections):
+        """Generate labels emphasizing primary tracking"""
         labels = []
         for i in range(len(detections)):
             confidence = detections.confidence[i]
             
-            # Get track ID if available
             track_id = -1
             if hasattr(detections, 'tracker_id') and detections.tracker_id is not None:
                 track_id = detections.tracker_id[i]
             
             if track_id != -1:
-                label = f"Horse ID:{track_id} ({confidence:.2f})"
+                label = f"PRIMARY-{track_id} ({confidence:.2f})"
             else:
-                label = f"Horse ({confidence:.2f})"
+                label = f"DETECTION ({confidence:.2f})"
                 
             labels.append(label)
         
         return labels
     
-    def _draw_status_overlay(self, frame, frame_idx, num_detections, num_samurai_tracks, 
-                           samurai_active, total_merges):
-        """Status information overlay (OpenCV for final display only)"""
+    def _draw_architecture1_status(self, frame, frame_idx, num_detections, 
+                                  num_primary_tracks, samurai_active, stats):
+        """Architecture 1 specific status display"""
         height, width = frame.shape[:2]
         
-        # Status background
-        cv2.rectangle(frame, (10, 10), (500, 140), (0, 0, 0), -1)
-        cv2.rectangle(frame, (10, 10), (500, 140), (255, 255, 255), 2)
+        cv2.rectangle(frame, (10, 10), (600, 160), (0, 0, 0), -1)
+        cv2.rectangle(frame, (10, 10), (600, 160), (255, 255, 255), 2)
         
-        # Status text
         status_lines = [
+            f"ARCHITECTURE 1: SAMURAI PRIMARY",
             f"Frame: {frame_idx}",
-            f"Detections: {num_detections}",
-            f"SAMURAI: {'ACTIVE' if samurai_active else 'INACTIVE'} ({num_samurai_tracks}/8)",
-            f"Total Merges: {total_merges}",
-            f"Supervision: ENABLED"
+            f"Detections Available: {num_detections}",
+            f"SAMURAI PRIMARY: {'ACTIVE' if samurai_active else 'BOOTSTRAPPING'} ({num_primary_tracks}/6)",
+            f"System: Detection-Independent Tracking",
+            f"Status: {'TRACKING' if samurai_active else 'WAITING FOR BOOTSTRAP'}"
         ]
         
         for i, line in enumerate(status_lines):
-            y_pos = 40 + (i * 22)
+            y_pos = 35 + (i * 20)
+            color = (0, 255, 0) if samurai_active else (255, 255, 0)
             cv2.putText(frame, line, (20, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 
-                       0.6, (255, 255, 255), 2)
+                       0.6, color, 2)
         
         return frame
 
-def _validate_detection_data(dets_np, frame_idx):
-    """CRITICAL: Validate detection data integrity before tracker update"""
-    if dets_np is None or len(dets_np) == 0:
-        return True
-    
-    # Check for NaN or infinite values
-    if np.any(np.isnan(dets_np)) or np.any(np.isinf(dets_np)):
-        print(f"🚨 NaN/Inf values detected in detection data at frame {frame_idx}")
-        return False
-    
-    # Validate bounding box coordinates
-    for i, det in enumerate(dets_np):
-        x1, y1, x2, y2 = det[:4]
-        
-        # Check for invalid box dimensions
-        if x2 <= x1 or y2 <= y1:
-            print(f"🚨 Invalid bounding box dimensions at frame {frame_idx}, detection {i}")
-            return False
-        
-        # Check for reasonable coordinate ranges
-        if x1 < 0 or y1 < 0 or x2 > 10000 or y2 > 10000:
-            print(f"🚨 Extreme coordinate values at frame {frame_idx}, detection {i}")
-            return False
-    
-    # Check confidence values
-    confidences = dets_np[:, 4]
-    if np.any(confidences < 0) or np.any(confidences > 1):
-        print(f"🚨 Invalid confidence values at frame {frame_idx}")
-        return False
-    
-    return True
-
-def process_video_with_unified_tracking(config: Config, max_frames: int = 2000, 
-                                      save_video: bool = True, output_video_path: str = None,
-                                      use_mask_centroids: bool = False):
+def process_video_architecture1(config: Config, max_frames: int = 2000, 
+                               save_video: bool = True, output_video_path: str = None,
+                               use_mask_centroids: bool = False):
     cache_file = "detection_cache/horse_9_del_mar_pan_seg_mdxam_2_0.7_2100.json"
     
     print(f"Loading cached detections from {cache_file}")
@@ -604,50 +593,36 @@ def process_video_with_unified_tracking(config: Config, max_frames: int = 2000,
     
     print(f"Loaded {len(cached_detections)} frames")
     
-    unified_tracker = SAMURAIUnifiedTracker(
+    # ARCHITECTURE 1: SAMURAI PRIMARY TRACKER
+    samurai_tracker = SAMURAIPrimaryTracker(
         device=config.device,
-        max_tracks=6,
-        centroid_update_interval=50,
+        max_tracks=6,  # Racing: exactly 6 horses
+        detection_reinit_interval=100,  # Opportunistic enhancement every 100 frames
         use_mask_centroids=use_mask_centroids
     )
     
-    deepsort_tracker = DeepOcSort(
-        reid_weights=Path('osnet_x0_25_msmt17.pt'),
-        device='cuda:0',
-        half=False,
-        max_age=180,
-        min_hits=5,
-        det_thresh=0.5,
-        iou_threshold=0.15,
-        w_association_emb=0.98,
-        embedding_off=False,
-    )
-    
-    # Video input/output setup
+    # Video setup
     cap = cv2.VideoCapture(config.video_path)
     
-    # Video writer setup
     video_writer = None
     if save_video:
         if output_video_path is None:
-            output_video_path = f"supervision_samurai_tracking_{int(time.time())}.mp4"
+            output_video_path = f"architecture1_samurai_primary_{int(time.time())}.mp4"
         
-        # Get video properties
         fps = int(cap.get(cv2.CAP_PROP_FPS))
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
-        # Create video writer
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         video_writer = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
-        print(f"📹 Saving SUPERVISION-ENHANCED video to: {output_video_path}")
+        print(f"📹 Saving ARCHITECTURE 1 video to: {output_video_path}")
         print(f"   Resolution: {width}x{height} @ {fps}fps")
     
     annotator = SupervisionVideoAnnotator()
     
     track_history = {}
-    samurai_merges = 0
-    tracker_reinit_count = 0
+    reinitialization_events = 0
+    enhancement_events = 0
     
     for frame_idx, detections in enumerate(cached_detections[:max_frames]):
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
@@ -655,77 +630,29 @@ def process_video_with_unified_tracking(config: Config, max_frames: int = 2000,
         if not ret:
             continue
             
-        # STEP 1: SAMURAI processing
-        unified_detections, associations = unified_tracker.process_frame(frame_idx, frame, detections)
+        # ARCHITECTURE 1: SAMURAI PRIMARY PROCESSING
+        samurai_detections, stats = samurai_tracker.process_frame(frame_idx, frame, detections)
         
-        if associations:
-            samurai_merges += sum(len(v) > 1 for v in associations.values())
+        # Track history for analysis
+        if hasattr(samurai_detections, 'tracker_id') and samurai_detections.tracker_id is not None:
+            for i, track_id in enumerate(samurai_detections.tracker_id):
+                if track_id != -1:
+                    if track_id not in track_history:
+                        track_history[track_id] = {'start': frame_idx, 'end': frame_idx}
+                    track_history[track_id]['end'] = frame_idx
         
-        if len(unified_detections) > 0:
-            dets_np = np.column_stack((
-                unified_detections.xyxy,
-                unified_detections.confidence,
-                np.zeros(len(unified_detections))
-            )).astype(np.float64)
-            
-            # CRITICAL: Data validation before tracker update
-            if not _validate_detection_data(dets_np, frame_idx):
-                print(f"⚠️  Invalid detection data at frame {frame_idx}, skipping tracker update")
-                unified_detections.tracker_id = np.array([-1] * len(unified_detections))
-            else:
-                try:
-                    tracks = deepsort_tracker.update(dets_np, frame)
-                    
-                    if tracks is not None:
-                        track_ids = []
-                        for i, detection in enumerate(unified_detections.xyxy):
-                            matched_track_id = -1
-                            for track in tracks:
-                                track_bbox = track[:4]
-                                if _bbox_overlap(detection, track_bbox) > 0.5:
-                                    matched_track_id = int(track[4])
-                                    break
-                            track_ids.append(matched_track_id)
-                        
-                        unified_detections.tracker_id = np.array(track_ids)
-                        
-                        for track in tracks:
-                            track_id = int(track[4])
-                            if track_id not in track_history:
-                                track_history[track_id] = {'start': frame_idx, 'end': frame_idx}
-                            track_history[track_id]['end'] = frame_idx
-                    else:
-                        unified_detections.tracker_id = np.array([-1] * len(unified_detections))
-                        
-                except Exception as e:
-                    print(f"🚨 TRACKER STATE CORRUPTION at frame {frame_idx}: {str(e)}")
-                    print(f"   Reinitializing DeepOCSORT tracker...")
-                    tracker_reinit_count += 1
-                    
-                    deepsort_tracker = DeepOcSort(
-                        reid_weights=Path('osnet_x0_25_msmt17.pt'),
-                        device='cuda:0',
-                        half=True
-                    )
-                    
-                    unified_detections.tracker_id = np.array([-1] * len(unified_detections))
-        else:
-            unified_detections.tracker_id = np.array([])
-        
-        # STEP 3: SUPERVISION ANNOTATION
+        # Video annotation
         if save_video:
             annotated_frame = annotator.annotate_frame(
-                frame, unified_detections, unified_tracker, frame_idx,
-                unified_tracker.samurai_active, samurai_merges
+                frame, samurai_detections, samurai_tracker, frame_idx, stats
             )
             video_writer.write(annotated_frame)
                     
         if frame_idx % 100 == 0:
-            active_samurai = len(unified_tracker.active_tracks)
-            print(f"Frame {frame_idx}: {len(detections)}→{len(unified_detections)} detections, "
-                  f"SAMURAI: {active_samurai}/8, Merges: {samurai_merges}")
+            active_primary = len(samurai_tracker.active_tracks)
+            print(f"Frame {frame_idx}: {len(detections)} detections → "
+                  f"SAMURAI PRIMARY: {active_primary}/6 tracks")
             
-            # Memory cleanup
             if frame_idx % 500 == 0:
                 torch.cuda.empty_cache()
                 gc.collect()
@@ -733,41 +660,17 @@ def process_video_with_unified_tracking(config: Config, max_frames: int = 2000,
     cap.release()
     if video_writer:
         video_writer.release()
-        print(f"✅ SUPERVISION VIDEO SAVED: {output_video_path}")
+        print(f"✅ ARCHITECTURE 1 VIDEO SAVED: {output_video_path}")
     
     long_tracks = {tid: data for tid, data in track_history.items() 
                    if data['end'] - data['start'] >= 1500}
     
-    print(f"\n🏁 SUPERVISION-ENHANCED RESULTS:")
+    print(f"\n🏁 ARCHITECTURE 1 RESULTS:")
     print(f"Total tracks: {len(track_history)} → Long tracks: {len(long_tracks)}")
-    print(f"SAMURAI merges: {samurai_merges}")
-    print(f"Max concurrent SAMURAI: 8")
-    
-    if tracker_reinit_count > 0:
-        print(f"🚨 TRACKER RECOVERY STATISTICS:")
-        print(f"   State corruptions recovered: {tracker_reinit_count}")
-        print(f"   System maintained stability through {tracker_reinit_count} tracker failures")
-    else:
-        print(f"✅ TRACKER STABILITY: Zero state corruptions detected")
+    print(f"SAMURAI PRIMARY: Detection-independent tracking")
+    print(f"System reliability: {'HIGH' if len(long_tracks) >= 4 else 'NEEDS TUNING'}")
     
     return track_history
-
-def _bbox_overlap(bbox1, bbox2):
-    """Calculate overlap between two bounding boxes"""
-    x1 = max(bbox1[0], bbox2[0])
-    y1 = max(bbox1[1], bbox2[1])
-    x2 = min(bbox1[2], bbox2[2])
-    y2 = min(bbox1[3], bbox2[3])
-    
-    if x2 <= x1 or y2 <= y1:
-        return 0
-    
-    intersection = (x2 - x1) * (y2 - y1)
-    area1 = (bbox1[2] - bbox1[0]) * (bbox1[3] - bbox1[1])
-    area2 = (bbox2[2] - bbox2[0]) * (bbox2[3] - bbox2[1])
-    union = area1 + area2 - intersection
-    
-    return intersection / union if union > 0 else 0
 
 def main():
     import sys
@@ -795,22 +698,21 @@ def main():
     config = Config(config_file)
     
     centroid_mode = "MASK" if use_mask_centroids else "BBOX"
-    print(f"🔧 SUPERVISION-ENHANCED SAMURAI TRACKING")
+    print(f"🏎️  ARCHITECTURE 1: SAMURAI PRIMARY TRACKING")
     print(f"   Video: {config.video_path}")
     print(f"   Max Frames: {max_frames}")
     print(f"   Centroid Mode: {centroid_mode}")
+    print(f"   Racing Mode: 6 horses fixed count")
     print(f"   Save Video: {save_video}")
-    if save_video and output_video_path:
-        print(f"   Output Video: {output_video_path}")
     
-    track_data = process_video_with_unified_tracking(
+    track_data = process_video_architecture1(
         config, max_frames, save_video, output_video_path, use_mask_centroids
     )
     
-    with open('supervision_unified_tracks.json', 'w') as f:
+    with open('architecture1_tracks.json', 'w') as f:
         json.dump(track_data, f, indent=2, default=str)
     
-    print(f"✅ Saved SUPERVISION tracking results to supervision_unified_tracks.json")
+    print(f"✅ Saved ARCHITECTURE 1 results to architecture1_tracks.json")
 
 if __name__ == "__main__":
     main()

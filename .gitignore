@@ -13,4 +13,5 @@ __pycache__
 *.json
 *.mp4
 
-
+runs/
+cache/horse_9_yolov11s-seg_0.80_-1.json.gz

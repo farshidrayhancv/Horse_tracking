@@ -7,6 +7,7 @@ output_path: null
 display: false
 device: 'cuda'
 max_frames: null
+cache_file: '/home/farshid/proj/Horse_tracking/detection_cache/del_mar_pan_poc_1_dets.json'
 
 # Roboflow Configuration
 roboflow_api_key: 'wFo5HAaMOWxmTBCubny1'
